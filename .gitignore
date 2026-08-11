@@ -1,0 +1,504 @@
+# =============================================================================
+# Ozon e-Cup 2026 — Task 3
+# Python / Data Analysis / ML / DL
+# macOS / Windows / Linux
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# OS files
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# Linux / Unix
+*~
+.directory
+.Trash-*
+.nfs*
+
+
+# -----------------------------------------------------------------------------
+# IDE / editors
+# -----------------------------------------------------------------------------
+
+# JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+
+# Fleet
+.fleet/
+
+# Vim
+*.swp
+*.swo
+*.swn
+
+# Emacs
+\#*\#
+.#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+
+# -----------------------------------------------------------------------------
+# Python bytecode / cache
+# -----------------------------------------------------------------------------
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+.python_history
+.pythonstartup
+
+.pytype/
+.pyre/
+.pyright/
+
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+.conda/
+conda-env/
+.python-version
+
+
+# -----------------------------------------------------------------------------
+# Environment variables / secrets
+# -----------------------------------------------------------------------------
+
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+credentials.json
+secrets.json
+secret.json
+
+credentials/
+secrets/
+
+
+# -----------------------------------------------------------------------------
+# Python packaging / build
+# -----------------------------------------------------------------------------
+
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+pip-wheel-metadata/
+
+
+# -----------------------------------------------------------------------------
+# Test / lint / type-check caches
+# -----------------------------------------------------------------------------
+
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+.tox/
+.nox/
+
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+.ruff_cache/
+.cache/
+
+.hypothesis/
+
+.pytype/
+
+
+# -----------------------------------------------------------------------------
+# Jupyter
+# -----------------------------------------------------------------------------
+
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+.jupyter/
+.local/share/jupyter/
+
+# Temporary notebook files
+*.nbconvert.ipynb
+
+
+# -----------------------------------------------------------------------------
+# Data
+# -----------------------------------------------------------------------------
+
+data/*
+!data/README.md
+!data/.gitkeep
+
+datasets/*
+!datasets/README.md
+!datasets/.gitkeep
+
+dataset/*
+!dataset/README.md
+!dataset/.gitkeep
+
+raw_data/
+raw/
+processed/
+interim/
+external/
+
+input/
+inputs/
+
+# Common large dataset formats
+*.parquet
+*.feather
+*.arrow
+
+*.npy
+*.npz
+*.memmap
+
+*.h5
+*.hdf5
+*.hdf
+
+*.mat
+
+*.tfrecord
+*.tfrecords
+
+*.avro
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tar.xz
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
+
+
+# -----------------------------------------------------------------------------
+# ML / DL models and checkpoints
+# -----------------------------------------------------------------------------
+
+models/*
+!models/README.md
+!models/.gitkeep
+
+weights/*
+!weights/README.md
+!weights/.gitkeep
+
+checkpoints/*
+!checkpoints/README.md
+!checkpoints/.gitkeep
+
+checkpoint/
+
+pretrained/
+pretrained_models/
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Hugging Face
+*.safetensors
+
+# ONNX
+*.onnx
+
+# TensorFlow / Keras
+*.keras
+*.tflite
+*.pb
+
+# Serialized sklearn / Python models
+*.joblib
+*.pkl
+*.pickle
+
+
+# -----------------------------------------------------------------------------
+# Training outputs / experiments
+# -----------------------------------------------------------------------------
+
+runs/
+run/
+
+experiments/
+experiment/
+
+logs/
+log/
+
+outputs/
+output/
+
+results/
+result/
+
+artifacts/
+artifact/
+
+predictions/
+prediction/
+preds/
+
+submissions/
+submission/
+
+tmp/
+temp/
+cache/
+
+
+# -----------------------------------------------------------------------------
+# Experiment tracking
+# -----------------------------------------------------------------------------
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# TensorBoard
+tensorboard/
+tensorboard_logs/
+
+events.out.tfevents.*
+*.tfevents.*
+
+# PyTorch Lightning
+lightning_logs/
+
+# Ray Tune
+ray_results/
+
+# Optuna
+optuna.db
+optuna*.db
+
+# Hydra runtime outputs
+.hydra/
+multirun/
+
+
+# -----------------------------------------------------------------------------
+# ML / DL framework caches
+# -----------------------------------------------------------------------------
+
+# Hugging Face
+.huggingface/
+huggingface/
+transformers_cache/
+hf_cache/
+
+# Torch
+.torch/
+torch_cache/
+
+# Keras
+.keras/
+
+# Triton / Torch Inductor
+triton/
+torchinductor/
+
+# Numba
+*.nbc
+*.nbi
+
+
+# -----------------------------------------------------------------------------
+# Profiling / benchmarking
+# -----------------------------------------------------------------------------
+
+*.prof
+*.lprof
+
+profile/
+profiles/
+
+benchmark/
+benchmarks/results/
+
+
+# -----------------------------------------------------------------------------
+# Generated plots / reports
+# -----------------------------------------------------------------------------
+
+figures/
+plots/
+
+reports/generated/
+reports/figures/
+
+# Keep manually written reports/docs if present
+!reports/*.md
+!reports/*.tex
+!reports/*.pdf
+
+
+# -----------------------------------------------------------------------------
+# Temporary files
+# -----------------------------------------------------------------------------
+
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+
+*.log
+
+*.lock
+~$*
+
+
+# -----------------------------------------------------------------------------
+# C / C++ / CUDA build artifacts
+# Useful for custom PyTorch/CUDA extensions
+# -----------------------------------------------------------------------------
+
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.so
+*.so.*
+*.exe
+*.out
+
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+Makefile
+
+*.cu.o
+*.cubin
+*.fatbin
+*.ptx
+
+
+# -----------------------------------------------------------------------------
+# DVC cache / temporary files
+# Keep .dvc files and DVC configuration themselves tracked
+# -----------------------------------------------------------------------------
+
+.dvc/cache/
+.dvc/tmp/
+.dvc/plots/
+
+
+# -----------------------------------------------------------------------------
+# Kaggle / competition tooling
+# -----------------------------------------------------------------------------
+
+.kaggle/
+
+kaggle.json
+
+# Local competition downloads
+competition_data/
+downloads/
+
+
+# -----------------------------------------------------------------------------
+# Misc local files
+# -----------------------------------------------------------------------------
+
+local/
+local_data/
+local_models/
+
+scratch/
+sandbox/
+
+debug/
+debug_output/
