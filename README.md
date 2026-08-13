@@ -8,12 +8,20 @@
 ```text
 .
 ├── README.md
+├── results.md
 ├── data/
-│   ├── train.parquet
-│   └── sample_submit.csv
-└── notebooks/
-    ├── 00_EDA.ipynb
-    └── 01_EDA_no_outliers.ipynb
+│   ├── sample_submit.csv
+│   └── train.parquet
+├── notebooks/
+│   ├── EDA/
+│   │   ├── 00_EDA.ipynb
+│   │   ├── 01_EDA_no_outliers.ipynb
+│   │   ├── 02_EDA_extended.ipynb
+│   │   └── 03_EDA_target_and_cohorts.ipynb
+│   └── modeling/
+│       └── 04_naive_baselines.ipynb
+└── src/
+    └── validation.py
 ```
 
 ## Запуск
