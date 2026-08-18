@@ -325,8 +325,8 @@ predictions/
 prediction/
 preds/
 
-submissions/
-submission/
+# submissions/
+# submission/
 
 tmp/
 temp/
