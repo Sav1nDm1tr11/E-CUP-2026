@@ -7,11 +7,12 @@
 | # | Модель | Участник | Public RMSLE | Сабмит |
 |---:|---|---|---:|---|
 | 1 | Hurdle BiLSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_hurdle.csv` |
-| 2 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
-| 3 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 4 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 5 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 6 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 2 | ~same, cosmetic changes | Дмитрий Сорчоан | 1.6529693117 | `lstm.csv` |
+| 3 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
+| 4 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 5 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 6 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 7 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
 ## LSTM-эксперименты
 
