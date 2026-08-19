@@ -10,9 +10,10 @@
 | 2 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
 | 3 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
 | 4 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 5 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 5 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 6 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
-## Наши LSTM-эксперименты
+## LSTM-эксперименты
 
 ### LSTM baseline
 
@@ -23,8 +24,6 @@
 **Public RMSLE: 1.6983236581.**
 
 ### Hurdle BiLSTM
-
-Текущая версия [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb).
 
 Используются две отдельные hybrid-модели:
 
@@ -49,6 +48,14 @@
 ```
 
 Абсолютное улучшение RMSLE: **0.0453543464**.
+
+Было 0 нулевых предсказаний.
+
+### MLP classifier + LSTM regressor
+
+Параметры LSTM взял из предыдущего коммита, классификатор -- модель попроще. 
+
+~40% нулей, но метрика не оч, буду переделывать (снова...)
 
 ## Наивные baseline
 
