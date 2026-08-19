@@ -6,8 +6,8 @@
 
 | # | Модель | Участник | Public RMSLE | Сабмит |
 |---:|---|---|---:|---|
-| 1 | Hurdle BiLSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_hurdle.csv` |
-| 2 | ~same, cosmetic changes | Дмитрий Сорчоан | 1.6529693117 | `lstm.csv` |
+| 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
+| 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
 | 3 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
 | 4 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
 | 5 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
