@@ -8,13 +8,33 @@
 |---:|---|---|---:|---|
 | 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
 | 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 3 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
+| 3 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
 | 4 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
 | 5 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
 | 6 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
 | 6 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
 | 7 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
 | 8 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+
+## Two-stage LightGBM
+
+Ноутбук: [09_Two_Staged_Model.ipynb](notebooks/modeling/09_Two_Staged_Model.ipynb).
+
+Модель состоит из двух LightGBM-стадий:
+
+- classifier оценивает вероятность положительного GMV;
+- regressor предсказывает `log1p(GMV)` только для положительных объектов.
+
+Используются 90 агрегированных поведенческих и GMV-признаков. Обе стадии
+настраиваются отдельными Optuna-study на expanding-window temporal CV. Финальный
+soft-прогноз объединяет стадии по формуле
+`expm1(scale * p_nonzero**gamma * pred_log_positive)`.
+
+Calibrated RMSLE на финальном holdout: **1.676222**.
+
+Финальный сабмит: `Two_Staged_Submission.csv`.
+
+**Public RMSLE: 1.6550467207965227.**
 
 ## LSTM-эксперименты
 

@@ -26,9 +26,12 @@
 │       ├── 04_naive_baselines.ipynb
 │       ├── 05_Data-Modeling.ipynb
 │       ├── 06_LSTM_Data_Preparation.ipynb
-│       └── 07_LSTM.ipynb
+│       ├── 07_LSTM.ipynb
+│       └── 09_Two_Staged_Model.ipynb
 ├── models/
-│   └── lstm_hurdle/
+│   ├── lstm_hurdle/
+│   └── two_stage/
+│       └── two_stage_model_v1.joblib
 ├── submissions/
 └── src/
     └── validation.py
@@ -110,6 +113,35 @@ sum(gmv) для cutoff < event_date <= cutoff + 30 дней
 - GMV последних 30 дней;
 - средний месячный GMV;
 - средний дневной GMV x 30.
+
+### [09_Two_Staged_Model.ipynb](notebooks/modeling/09_Two_Staged_Model.ipynb)
+
+Двухстадийная модель на LightGBM разделяет прогноз на вероятность покупки и
+размер положительного GMV:
+
+- classifier оценивает `P(target_gmv_30d > 0 | X)`;
+- regressor предсказывает `log1p(target_gmv_30d)` для положительных объектов;
+- финальный soft-прогноз вычисляется как
+  `expm1(scale * p_nonzero**gamma * pred_log_positive)`.
+
+Модель использует 90 агрегированных поведенческих и GMV-признаков из
+[Prepared_data.parquet](data/Prepared_data.parquet). Обе стадии настраиваются
+отдельными Optuna-study на expanding-window temporal CV, после чего soft gate
+калибруется параметрами `scale` и `gamma`.
+
+На финальном holdout calibrated RMSLE составил **1.676222**, на публичном
+лидерборде -- **1.6550467207965227**.
+
+Готовый joblib-бандл находится в
+[models/two_stage/two_stage_model_v1.joblib](models/two_stage/two_stage_model_v1.joblib).
+Он содержит classifier, regressor, порядок признаков, параметры калибровки и
+пороговые значения для инференса:
+
+```python
+import joblib
+
+model_bundle = joblib.load("models/two_stage/two_stage_model_v1.joblib")
+```
 
 ### [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb)
 
