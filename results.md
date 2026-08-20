@@ -9,10 +9,11 @@
 | 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
 | 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
 | 3 | Two-stage model | Дмитрий Савин | 1.6550467208 | `Two_Staged_Submission.csv` |
-| 4 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 5 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 6 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 7 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 4 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 5 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 6 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 7 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 8 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
 ## LSTM-эксперименты
 
@@ -51,6 +52,10 @@
 Абсолютное улучшение RMSLE: **0.0453543464**.
 
 Было 0 нулевых предсказаний.
+
+### ... + trashhold
+
+Добавил в конце подбор на валидации при помощи оптуны процента наименьших предсказаний, которые нужно домножить на fraction $\in [0, 1]$, стало хуже. мб кросс-валидация поможет конечно, но пока неудачно.
 
 ### MLP classifier + LSTM regressor
 
