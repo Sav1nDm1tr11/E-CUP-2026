@@ -5,7 +5,7 @@
 
 Метрика соревнования -- **RMSLE**. Результаты сабмитов вынесены отдельно в [results.md](results.md).
 
-## Структура проекта
+## Структура проекта (Loading...)
 
 ```text
 .
@@ -23,18 +23,22 @@
 │   │   ├── 02_EDA_extended.ipynb
 │   │   └── 03_EDA_target_and_cohorts.ipynb
 │   └── modeling/
+        ├── two_stage/
 │       ├── 04_naive_baselines.ipynb
 │       ├── 05_Data-Modeling.ipynb
 │       ├── 06_LSTM_Data_Preparation.ipynb
 │       ├── 07_LSTM.ipynb
-│       └── 09_Two_Staged_Model.ipynb
+│       ├── 08_Blending.ipynb
+│       ├── 10_Base_Models.ipynb
+│       └── 11_Stacking.ipynb
 ├── models/
 │   ├── lstm_hurdle/
 │   └── two_stage/
 │       └── two_stage_model_v1.joblib
 ├── submissions/
 └── src/
-    └── validation.py
+    ├── validation.py
+    └── tabular_data.py
 ```
 
 ## Данные
@@ -142,6 +146,39 @@ import joblib
 
 model_bundle = joblib.load("models/two_stage/two_stage_model_v1.joblib")
 ```
+
+### [10_Base_Models.ipynb](notebooks/modeling/10_Base_Models.ipynb) и [11_Stacking.ipynb](notebooks/modeling/11_Stacking.ipynb)
+
+Семь различных ML-моделей на 91 признаке из
+[Prepared_data.parquet](data/Prepared_data.parquet) как основа для стекинга:
+
+| Модель | Семейство |
+|---|---|
+| CatBoost | бустинг (ordered boosting) |
+| LightGBM | бустинг (leaf-wise) |
+| RandomForest | бэггинг |
+| ElasticNet/Ridge | линейная модель |
+| SGDRegressor | линейный SVM (ε-нечувствительный лосс) |
+| Nystroem + Ridge | аппроксимация RBF-ядра |
+| FAISS KNN | instance-based |
+
+Гиперпараметры каждой модели подбираются Optuna на 3 expanding-window
+CV-фолдах, качество проверяется на отдельном holdout-cutoff, исключённом из
+подбора и обучения. Лучшие по holdout -- LightGBM и CatBoost (RMSLE ≈ 1.685).
+
+Предсказания всех семи моделей на holdout сохраняются в
+[data/oof/base_models_holdout.parquet](data/oof/base_models_holdout.parquet)
+и становятся обучающей выборкой мета-модели в `11_Stacking.ipynb`: пробуются
+Ridge/ElasticNet, неглубокий LightGBM и LightGBM с добавлением исходных
+признаков, лучший вариант дообучается на всём holdout и применяется к
+предсказаниям базовых моделей на inference cutoff
+([data/oof/base_models_inference.parquet](data/oof/base_models_inference.parquet)).
+
+Базовые модели коррелируют между собой на 0.97+ в log1p-пространстве, поэтому
+выигрыш стекинга небольшой (~0.015 RMSLE на holdout) и на публичном
+лидерборде почти исчезает. Подробности и все цифры -- в
+[results.md](results.md).
+
 
 ### [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb)
 

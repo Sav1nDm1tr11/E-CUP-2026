@@ -8,13 +8,17 @@
 |---:|---|---|---:|---|
 | 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
 | 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 3 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
-| 4 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
-| 5 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 6 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 6 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 7 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 8 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 3 | Upgrage two-stage model | Дмитрий Савин | 1,6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` | 
+| 4 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
+| 5 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 6 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
+| 7 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
+| 8 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
+| 9 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 10 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 11 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 12 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 13 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
 ## Two-stage LightGBM
 
@@ -83,6 +87,70 @@ Calibrated RMSLE на финальном holdout: **1.676222**.
 Параметры LSTM взял из предыдущего коммита, классификатор -- модель попроще. 
 
 ~40% нулей, но метрика не оч, буду переделывать (снова...)
+
+## Базовые ML-модели + стекинг
+
+Ноутбуки: [10_Base_Models.ipynb](notebooks/modeling/10_Base_Models.ipynb),
+[11_Stacking.ipynb](notebooks/modeling/11_Stacking.ipynb).
+
+### Базовые модели
+
+Семь моделей (CatBoost, LightGBM, RandomForest, ElasticNet, SGD с
+ε-нечувствительным SVM-лоссом, Nystroem+Ridge, FAISS KNN) на 91 признаке из
+`Prepared_data.parquet`. Гиперпараметры каждой подобраны Optuna на 3
+expanding-window CV-фолдах, качество проверено на holdout-cutoff
+`2026-01-14`, не участвовавшем в подборе.
+
+| Модель | Holdout RMSLE |
+|---|---:|
+| LightGBM | **1.68542** |
+| CatBoost | 1.68767 |
+| Nystroem + Ridge | 1.69747 |
+| RandomForest | 1.69918 |
+| ElasticNet | 1.71019 |
+| FAISS KNN | 1.72245 |
+| SGDRegressor (SVM) | 1.74624 |
+
+Наблюдения:
+
+- CatBoost и LightGBM независимо сходятся на одном и том же топ-сигнале --
+  recency/frequency-признаках покупок (`purchase_days_90d`,
+  `median_purchase_gap_days`, `gmv_daily_mean`).
+- Все модели систематически недооценивают whale-сегмент (топ-5% по
+  `whale_score`) и часть из них даёт ложноположительный ненулевой прогноз
+  пользователям с фактическим `y_true = 0`.
+- Ошибка растёт вместе с истинным GMV: на топ-квинтиле положительных
+  пользователей RMSLE примерно вдвое выше, чем на нижнем.
+
+### Стекинг
+
+Гиперпараметры мета-модели подбираются с помощью optuna на случайном 5-fold CV внутри holdout, затем она обучается на всем holdout. В качестве признаков мета-модели используются предсказания 7 базовых моделей (и, возможно, некоторые исходные признаки).
+
+| Вариант | holdout rmsle / 5-fold CV на holdout|
+|---|---:|
+| Лучшая одиночная модель (LightGBM) | 1.6854 |
+| Uniform / inverse-RMSLE log-blend | 1.6911 / 1.6910 |
+| Мета-ElasticNet на 7 прогнозах | 1.6704 |
+| Мета-LightGBM на 7 прогнозах | 1.6701 |
+| Мета-LightGBM + 8 исходных признаков | **1.6696** |
+
+Все 7 базовых моделей коррелируют между собой на 0.969-0.999 в
+log1p-пространстве -- модели видят один и тот же сигнал, поэтому стекингу
+почти нечего "взаимно компенсировать". Весь выигрыш стекинга на holdout
+(~0.015 RMSLE, ~0.9% относительно лучшей одиночной модели) получается уже от
+простого линейного взвешивания прогнозов; добавление нелинейности (LightGBM)
+и исходных признаков даёт на порядок меньше.
+
+**На публичном лидерборде прирост от стекинга почти полностью исчез:**
+
+| Сабмит | Public RMSLE |
+|---|---:|
+| `base_lightgbm.csv` (лучшая одиночная база) | 1.6593651677 |
+| `stacking_meta_lightgbm.csv` | 1.6588914845 |
+| `stacking_meta_elasticnet.csv` | 1.6579957889 |
+
+Вывод: для дальнейшего роста нужны модели с более разнородными ошибками
+(другие признаки/архитектуры).
 
 ## Наивные baseline
 
