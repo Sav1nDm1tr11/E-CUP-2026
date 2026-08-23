@@ -527,7 +527,10 @@ def plot_blend_weights(table, *, path=None):
         for column in ("trained_through", "report_cutoff")
     )
     if has_history:
-        date_col = "report_cutoff" if "report_cutoff" in table else "trained_through"
+        date_col = next(
+            column for column in ("report_cutoff", "trained_through")
+            if column in table and pd.to_datetime(table[column], errors="coerce").notna().any()
+        )
         for model, group in table.groupby("model", sort=True):
             axis.plot(pd.to_datetime(group[date_col], errors="coerce"), group["weight"], marker="o", label=str(model))
         axis.set_xlabel("Дата отсечения")

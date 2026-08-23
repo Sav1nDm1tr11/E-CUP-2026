@@ -32,9 +32,9 @@
 
 ## Проверки
 
-- `py -3.14 -m unittest tests.test_diagnostics -v`: **7/7 OK**.
+- `py -3.14 -m unittest tests.test_diagnostics -v`: **8/8 OK**.
 - `py -3.14 -m compileall -q src tests`: **OK**.
-- Полный v2 suite: **48 OK, 1 ожидаемый fail** — `test_environment` сообщает
+- Полный v2 suite: **49 OK, 1 ожидаемый fail** — `test_environment` сообщает
   отсутствующую optional dependency `interpret`; этот blocker не относится к
   diagnostics.
 

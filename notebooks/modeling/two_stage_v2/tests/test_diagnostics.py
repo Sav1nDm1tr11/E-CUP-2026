@@ -6,6 +6,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.figure
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -114,6 +115,7 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertTrue(path.exists() and path.stat().st_size > 0)
                 # Library functions must return ownership to the caller; no implicit display.
                 figure.clf()
+                plt.close(figure)
 
     def test_semantic_multiseries_plots_have_labels_and_artists(self):
         cutoff = d.plot_cutoff_summary(d.build_cutoff_summary(self.frame))
@@ -138,7 +140,21 @@ class DiagnosticsTests(unittest.TestCase):
         ]))
         self.assertEqual(len(simplex.axes[0].collections), 1)
         self.assertEqual(simplex.axes[0].get_xlabel(), "w₁ + 0.5·w₂")
-        self.assertEqual(len(d.plot_segment_heatmap(pd.DataFrame({"segment": ["A", "B"], "model": ["new", "new"], "target_gmv_30d": [1, 2], "prediction": [1, 1]})).axes[0].images), 1)
+        segment_figure = d.plot_segment_heatmap(pd.DataFrame({"segment": ["A", "B"], "model": ["new", "new"], "target_gmv_30d": [1, 2], "prediction": [1, 1]}))
+        self.assertEqual(len(segment_figure.axes[0].images), 1)
+        for figure in (cutoff, timeline, metrics, simplex, segment_figure):
+            plt.close(figure)
+
+    def test_blend_history_uses_populated_trained_through_when_report_cutoff_empty(self):
+        history = pd.DataFrame({
+            "model": ["A", "A"], "weight": [0.6, 0.7],
+            "trained_through": pd.to_datetime(["2025-01-01", "2025-02-01"]),
+            "report_cutoff": [pd.NaT, pd.NaT],
+        })
+        figure = d.plot_blend_weights(history)
+        self.assertEqual(len(figure.axes[0].lines), 1)
+        self.assertTrue(pd.to_datetime(figure.axes[0].lines[0].get_xdata()).notna().all())
+        plt.close(figure)
 
 
 if __name__ == "__main__":
