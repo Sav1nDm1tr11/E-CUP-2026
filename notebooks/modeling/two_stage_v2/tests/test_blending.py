@@ -71,5 +71,37 @@ class BlendingTests(unittest.TestCase):
         state = fit_walk_forward_blend(past, past["predicted_positive_log"], past["target_gmv_30d"],
                                        {"trained_through": pd.Timestamp("2025-06-18")})
         self.assertTrue(state.diagnostics)
-        self.assertIn("calibrated_logloss", state.diagnostics[0])
+        self.assertIn("fold_metrics", state.diagnostics[0])
         self.assertEqual(state.to_dict()["trained_through"], "2025-06-18T00:00:00")
+
+    def test_governance_defaults_and_fold_stability_objective_are_exact(self):
+        from src.config import ExperimentConfig
+        self.assertEqual(ExperimentConfig.__dataclass_fields__["max_logloss_degradation"].default, 0.0010)
+        self.assertEqual(ExperimentConfig.__dataclass_fields__["max_brier_degradation"].default, 0.0005)
+        past = pd.DataFrame({
+            "cutoff_date": pd.to_datetime(["2025-05-19", "2025-05-19", "2025-06-18", "2025-06-18"]),
+            "p_lgbm": [0.1, 0.2, 0.8, 0.9], "p_catboost": [0.2, 0.3, 0.7, 0.8],
+            "predicted_positive_log": [1.0, 1.0, 2.0, 2.0],
+            "target_gmv_30d": [0.0, 0.0, 3.0, 4.0], "target_nonzero": [0, 0, 1, 1],
+        })
+        state = fit_walk_forward_blend(past, past["predicted_positive_log"], past["target_gmv_30d"],
+                                       {"trained_through": pd.Timestamp("2025-06-18")})
+        selected = next(item for item in state.diagnostics if tuple(item["weights"]) == state.weights)
+        scores = np.asarray([item["rmsle"] for item in selected["fold_metrics"]])
+        self.assertAlmostEqual(state.objective, scores.mean() + 0.25 * scores.std())
+        self.assertTrue(all("logloss_current" in item and "brier_current" in item
+                            for item in selected["fold_metrics"]))
+
+    def test_governance_gate_rejects_candidate_on_one_cutoff(self):
+        past = pd.DataFrame({
+            "cutoff_date": pd.to_datetime(["2025-05-19", "2025-05-19", "2025-06-18", "2025-06-18"]),
+            "p_lgbm": [0.01, 0.01, 0.99, 0.99], "p_catboost": [0.99, 0.99, 0.01, 0.01],
+            "predicted_positive_log": [1.0] * 4,
+            "target_gmv_30d": [0.0, 0.0, 3.0, 4.0], "target_nonzero": [0, 0, 1, 1],
+        })
+        state = fit_walk_forward_blend(past, past["predicted_positive_log"], past["target_gmv_30d"],
+                                       {"trained_through": pd.Timestamp("2025-06-18")})
+        self.assertTrue(any(not item["accepted"] for item in state.diagnostics))
+        for item in state.diagnostics:
+            if item["accepted"]:
+                self.assertTrue(all(fold["accepted"] for fold in item["fold_metrics"]))

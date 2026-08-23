@@ -1,4 +1,4 @@
-# Task 3 report (hardened review pass)
+# Task 3 report (hardened review/statistics pass)
 
 ## Implemented
 
@@ -13,7 +13,7 @@ Created the seven owned core modules under `notebooks/modeling/two_stage_v2/src/
 - sklearn-compatible sigmoid calibration;
 - deterministic convex simplex blending, soft-log/expm1 prediction, and serializable past-only `BlendState`.
 
-Review hardening additionally makes the blend boundary an explicit trusted input, requires `cutoff_date` plus both `p_lgbm` and `p_catboost`, validates binary target consistency, enforces configurable logloss/Brier degradation limits, and records JSON-safe candidate diagnostics. Feature validation now permits NaN but rejects infinity without a full float64 matrix copy; bootstrap samples retain every fold; and default configuration contains the approved cutoff/report dates and explicit search budgets.
+Review hardening additionally makes the blend boundary an explicit trusted input, requires `cutoff_date` plus both `p_lgbm` and `p_catboost`, validates binary target consistency, and records JSON-safe candidate diagnostics. Governance now uses the frozen current `p_lgbm` per-cutoff baseline with exact tolerances `LogLoss + 0.0010` and `Brier + 0.0005`; candidates must pass every cutoff. Candidate fit objective is exactly `mean(fold RMSLE) + 0.25 * std(fold RMSLE)` (zero stability term for one fold). Feature validation permits NaN but rejects infinity without a full float64 matrix copy; bootstrap samples retain every fold; and default configuration contains the approved cutoff/report dates and explicit search budgets.
 
 ## Verification
 
@@ -24,7 +24,7 @@ Set-Location notebooks/modeling/two_stage_v2
 & 'C:\Users\savin\AppData\Local\Programs\Python\Python314\python.exe' -m unittest tests.test_data_contract tests.test_temporal_split tests.test_metrics tests.test_calibration tests.test_blending -v
 ```
 
-Result: **19 tests passed** (including review regression tests).
+Result: **21 tests passed** (including review/statistics regression tests).
 
 Full v2 command:
 

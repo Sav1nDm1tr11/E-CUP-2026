@@ -142,27 +142,41 @@ def fit_walk_forward_blend(past_oof, positive_log, actual_gmv, config, *, traine
     if not np.isfinite(probabilities).all():
         raise ValueError("OOF probabilities must be finite")
     step = float(_config_value(config, "simplex_step", 0.05))
-    max_logloss_degradation = float(_config_value(config, "max_logloss_degradation", 0.02))
-    max_brier_degradation = float(_config_value(config, "max_brier_degradation", 0.02))
+    max_logloss_degradation = float(_config_value(config, "max_logloss_degradation", 0.0010))
+    max_brier_degradation = float(_config_value(config, "max_brier_degradation", 0.0005))
+    cutoff_values = tuple(pd.DatetimeIndex(cutoff).sort_values().unique())
     diagnostics: list[dict[str, Any]] = []
     best: tuple[float, np.ndarray, SigmoidCalibrator] | None = None
     for weights in simplex_grid(len(model_columns), step):
         raw = np.clip(probabilities @ weights, 0.0, 1.0)
         calibrator = SigmoidCalibrator().fit(raw, target)
         calibrated = calibrator.predict_proba(raw)[:, 1]
-        objective = rmsle(actual, combine_predictions(calibrated, positive).prediction)
-        raw_logloss = float(log_loss(target, raw, labels=[0, 1]))
-        calibrated_logloss = float(log_loss(target, calibrated, labels=[0, 1]))
-        raw_brier = float(brier_score_loss(target, raw))
-        calibrated_brier = float(brier_score_loss(target, calibrated))
-        accepted = (
-            calibrated_logloss <= raw_logloss + max_logloss_degradation
-            and calibrated_brier <= raw_brier + max_brier_degradation
-        )
+        prediction = combine_predictions(calibrated, positive).prediction
+        fold_metrics: list[dict[str, Any]] = []
+        for cutoff_value in cutoff_values:
+            mask = cutoff.to_numpy() == cutoff_value
+            current_probability = np.clip(probabilities[mask, 0], 0.0, 1.0)
+            candidate_probability = calibrated[mask]
+            current_logloss = float(log_loss(target[mask], current_probability, labels=[0, 1]))
+            candidate_logloss = float(log_loss(target[mask], candidate_probability, labels=[0, 1]))
+            current_brier = float(brier_score_loss(target[mask], current_probability))
+            candidate_brier = float(brier_score_loss(target[mask], candidate_probability))
+            fold_metrics.append({
+                "cutoff_date": pd.Timestamp(cutoff_value).isoformat(),
+                "rmsle": rmsle(actual[mask], prediction[mask]),
+                "logloss_current": current_logloss, "logloss_candidate": candidate_logloss,
+                "brier_current": current_brier, "brier_candidate": candidate_brier,
+                "accepted": bool(
+                    candidate_logloss <= current_logloss + max_logloss_degradation
+                    and candidate_brier <= current_brier + max_brier_degradation
+                ),
+            })
+        fold_rmsle = np.asarray([item["rmsle"] for item in fold_metrics], dtype=float)
+        objective = float(fold_rmsle.mean() + 0.25 * (fold_rmsle.std() if len(fold_rmsle) > 1 else 0.0))
+        accepted = all(item["accepted"] for item in fold_metrics)
         diagnostics.append({
-            "weights": [float(value) for value in weights], "objective": float(objective),
-            "raw_logloss": raw_logloss, "calibrated_logloss": calibrated_logloss,
-            "raw_brier": raw_brier, "calibrated_brier": calibrated_brier,
+            "weights": [float(value) for value in weights], "objective": objective,
+            "fold_metrics": fold_metrics,
             "accepted": bool(accepted),
         })
         if not accepted:

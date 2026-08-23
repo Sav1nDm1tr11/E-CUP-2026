@@ -52,8 +52,8 @@ class ExperimentConfig:
     catboost_early_stopping_rounds: int = 150
     ebm_max_configurations: int = 12
     ebm_pilot_wall_clock_seconds: int = 5400
-    max_logloss_degradation: float = 0.02
-    max_brier_degradation: float = 0.02
+    max_logloss_degradation: float = 0.0010
+    max_brier_degradation: float = 0.0005
     frozen_classifier_n_estimators: int = 722
     frozen_regressor_n_estimators: int = 1666
     frozen_classifier_params: tuple[tuple[str, Any], ...] = (
