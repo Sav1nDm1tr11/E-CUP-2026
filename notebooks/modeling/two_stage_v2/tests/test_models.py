@@ -11,6 +11,7 @@ from src.models import (
     fit_ebm_classifier,
     fit_lgbm_classifier,
     fit_positive_lgbm_regressor,
+    _rss_tree_bytes,
 )
 from src.temporal_split import build_nested_folds
 
@@ -126,6 +127,23 @@ class ModelContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["selected_params"], {"depth": 2})
         self.assertEqual(result.estimator.kwargs["depth"], 2)
 
+    def test_ordered_requires_finite_plain_governance_metrics(self):
+        class OrderedFake(RecordingEstimator):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.best_iteration_ = 2
+        dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
+        frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},
+                             index=pd.DatetimeIndex(dates.repeat(2), name="cutoff_date"))
+        fold = build_nested_folds(dates, [pd.Timestamp("2025-07-18")])[0]
+        kwargs = dict(estimator_factory=OrderedFake, param_distributions={"depth": [6]}, trials=1,
+                      inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
+        self.assertIsInstance(fit_catboost_classifier(frame, [0, 1] * 4, fold, ordered=True, **kwargs), ResourceRejection)
+        result = fit_catboost_classifier(frame, [0, 1] * 4, fold, ordered=True,
+                                         plain_metrics={"rmsle": 1.0, "fit_seconds": 1.0,
+                                                        "peak_memory_bytes": 10_000}, **kwargs)
+        self.assertIsInstance(result, FittedFoldModel)
+
     def test_ebm_memory_gate_and_temporal_bags_are_structured(self):
         dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
         frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},
@@ -138,12 +156,15 @@ class ModelContractTests(unittest.TestCase):
             def fit(self, X, y, **kwargs): self.fits.append((X, y, kwargs)); return self
             def predict_proba(self, X): return np.column_stack([np.full(len(X), .5), np.full(len(X), .5)])
         rejected = fit_ebm_classifier(frame, [0, 1] * 4, fold, estimator_factory=EBM,
-                                      available_memory=1000, measured_overhead=250)
+                                      available_memory=1000, measured_overhead=250,
+                                      inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
         self.assertIsInstance(rejected, ResourceRejection)
         accepted = fit_ebm_classifier(frame, [0, 1] * 4, fold, estimator_factory=EBM,
-                                      available_memory=1000, measured_overhead=100)
+                                      available_memory=1000, measured_overhead=100,
+                                      inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
         self.assertIsInstance(accepted, FittedFoldModel)
-        self.assertTrue(EBM.fits[0][2]["bags"].tolist().count(-1) > 0)
+        self.assertEqual(EBM.fits[0][2]["bags"].shape[1], 8)
+        self.assertTrue((EBM.fits[0][2]["bags"] == -1).any())
 
     def test_ebm_default_overhead_measurement_and_array_rounds_are_safe(self):
         dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
@@ -156,7 +177,16 @@ class ModelContractTests(unittest.TestCase):
             def fit(self, X, y, **kwargs): return self
             def predict_proba(self, X): return np.column_stack([np.full(len(X), .5), np.full(len(X), .5)])
         accepted = fit_ebm_classifier(frame, [0, 1] * 4, fold, estimator_factory=EBM,
-                                      available_memory=1_000_000)
+                                      available_memory=1_000_000,
+                                      inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
         self.assertIsInstance(accepted, FittedFoldModel)
         self.assertEqual(accepted.best_iteration, 5)
         self.assertGreaterEqual(accepted.metadata["measured_overhead"], 0)
+
+    def test_rss_tree_aggregates_parent_and_recursive_children(self):
+        class Proc:
+            def memory_info(self): return type("Info", (), {"rss": 100})()
+            def children(self, recursive=True):
+                return [type("Child", (), {"memory_info": lambda self: type("Info", (), {"rss": 20})()})(),
+                        type("Child", (), {"memory_info": lambda self: type("Info", (), {"rss": 30})()})()]
+        self.assertEqual(_rss_tree_bytes(Proc()), 150)

@@ -342,8 +342,21 @@ def fit_catboost_classifier(
     """Search CatBoost candidates sequentially, then perform a fresh refit."""
     from sklearn.model_selection import ParameterSampler
     from sklearn.metrics import log_loss
+    from scipy.stats import loguniform, uniform
 
     dates = _dates(X, groups)
+    order_frame = pd.DataFrame({"_cutoff": dates, "_position": np.arange(len(X))})
+    if "user_id" in X.columns:
+        order_frame["_user"] = X["user_id"].astype(str).to_numpy()
+        order_frame = order_frame.sort_values(["_cutoff", "_user", "_position"], kind="mergesort")
+    else:
+        order_frame = order_frame.sort_values(["_cutoff", "_position"], kind="mergesort")
+    order = order_frame["_position"].to_numpy(dtype=int)
+    X = X.iloc[order].copy()
+    y = _slice(y, order)
+    if groups is not None:
+        groups = np.asarray(groups)[order]
+    dates = dates[order]
     model_X = _feature_frame(X)
     outer_train = np.asarray(dates.isin(fold.train_dates), dtype=bool)
     inner_valid = np.asarray(dates == fold.inner_valid_date, dtype=bool)
@@ -361,7 +374,9 @@ def fit_catboost_classifier(
     # Keep candidate generation behind ParameterSampler even for the small
     # default search; this makes trial ordering and the random seed auditable.
     candidate_space = dict(param_distributions or {
-        "depth": [6, 7, 8, 9, 10], "learning_rate": [0.02, 0.03, 0.04, 0.05],
+        "depth": [6, 8, 10], "learning_rate": loguniform(0.02, 0.08),
+        "l2_leaf_reg": loguniform(0.01, 100), "random_strength": uniform(0, 2),
+        "bagging_temperature": uniform(0, 5), "rsm": uniform(0.70, 0.30),
     })
     requested_trials = int(trials if trials is not None else getattr(config, "catboost_trials", 20))
     n_trials = max(1, min(requested_trials, 3) if ordered else requested_trials)
@@ -377,8 +392,8 @@ def fit_catboost_classifier(
     best_candidate: dict[str, Any] = {}
     best_iteration = int(base["iterations"])
     objective_actual = actual_gmv_30d if actual_gmv_30d is not None else actual_gmv
-    positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)
-    actual = None if objective_actual is None else np.asarray(objective_actual, dtype=float)
+    positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)[order]
+    actual = None if objective_actual is None else np.asarray(objective_actual, dtype=float)[order]
     if positive is None or actual is None:
         raise ValueError("CatBoost requires inner_positive_log and actual_gmv for end-to-end objective")
     if positive is not None and not (
@@ -432,13 +447,19 @@ def fit_catboost_classifier(
     }
     if ordered and plain_metrics is None:
         return ResourceRejection("ordered_governance_metrics_unavailable", 0, 0, 0, 0)
+    if ordered:
+        required = ("rmsle", "fit_seconds", "peak_memory_bytes")
+        if any(key not in plain_metrics for key in required) or any(
+            not np.isfinite(float(plain_metrics[key])) or float(plain_metrics[key]) < 0 for key in required
+        ):
+            return ResourceRejection("ordered_governance_metrics_invalid", 0, 0, 0, 0)
     if plain_metrics:
         governance.update({f"plain_{key}": value for key, value in plain_metrics.items()})
         if ordered and "rmsle" in plain_metrics:
             improvement = float(plain_metrics["rmsle"]) - best_score
             governance["improvement"] = improvement
             plain_seconds = float(plain_metrics.get("fit_seconds", np.inf))
-            plain_memory = float(plain_metrics.get("memory_bytes", plain_metrics.get("plain_memory_bytes", np.inf)))
+            plain_memory = float(plain_metrics["peak_memory_bytes"])
             current_memory = float(governance.get("memory_bytes", governance.get("peak_memory_bytes", 0)))
             if improvement < minimum_ordered_improvement and (
                 governance["fit_seconds"] > 3 * plain_seconds
@@ -488,7 +509,7 @@ def _measure_ebm_toy_overhead(
         toy = estimator_factory(**dict(params))
     except Exception:
         return None
-    baseline = int(process.memory_info().rss)
+    baseline = _rss_tree_bytes(process)
     peak = baseline
     stop = threading.Event()
 
@@ -496,7 +517,7 @@ def _measure_ebm_toy_overhead(
         nonlocal peak
         while not stop.wait(0.01):
             try:
-                peak = max(peak, int(process.memory_info().rss))
+                peak = max(peak, _rss_tree_bytes(process))
             except Exception:
                 return
 
@@ -511,11 +532,25 @@ def _measure_ebm_toy_overhead(
     stop.set()
     sampler.join(timeout=1)
     try:
-        peak = max(peak, int(process.memory_info().rss))
+        peak = max(peak, _rss_tree_bytes(process))
     except Exception:
         return None
     overhead = peak - baseline
     return int(overhead) if overhead >= 0 else None
+
+
+def _rss_tree_bytes(process: Any) -> int:
+    """Return parent plus recursive child RSS, tolerating exited children."""
+    try:
+        total = int(process.memory_info().rss)
+        for child in process.children(recursive=True):
+            try:
+                total += int(child.memory_info().rss)
+            except Exception:
+                continue
+        return total
+    except Exception:
+        return -1
 
 
 def fit_ebm_classifier(
@@ -538,6 +573,9 @@ def fit_ebm_classifier(
     max_configurations: int = 12,
     pilot_wall_clock_seconds: int = 5400,
     candidate_configs: Sequence[Mapping[str, Any]] | None = None,
+    inner_positive_log: Sequence[float] | None = None,
+    actual_gmv: Sequence[float] | None = None,
+    _selection_only: bool = False,
 ) -> FittedFoldModel | ResourceRejection:
     """Fit InterpretML EBM only after the exact 70% RAM gate passes.
 
@@ -552,13 +590,21 @@ def fit_ebm_classifier(
         except ImportError:
             available = 0
     fraction = float(getattr(config, "resource_gate_fraction", 0.70))
+    positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)
+    actual = None if actual_gmv is None else np.asarray(actual_gmv, dtype=float)
+    if positive is None or actual is None or len(positive) != len(X) or len(actual) != len(X):
+        raise ValueError("EBM requires inner_positive_log and actual_gmv matching X")
     if candidate_configs is not None:
         candidates = list(candidate_configs)[:min(12, max(1, int(max_configurations)))]
         if not candidates:
             return ResourceRejection("ebm_no_candidates", 0, 0, available, int(available * fraction))
+        if len(candidates) == 1:
+            params = dict(candidates[0])
+            candidate_configs = None
         if len(candidates) > 1:
             started_search = time.perf_counter()
             last_rejection: ResourceRejection | None = None
+            best: tuple[float, Mapping[str, Any]] | None = None
             for candidate in candidates:
                 if time.perf_counter() - started_search > pilot_wall_clock_seconds:
                     break
@@ -569,15 +615,29 @@ def fit_ebm_classifier(
                     overhead_estimator=overhead_estimator, max_rounds=max_rounds, groups=groups,
                     inner_bags=inner_bags, n_jobs=n_jobs, early_stopping_rounds=early_stopping_rounds,
                     max_configurations=1, pilot_wall_clock_seconds=pilot_wall_clock_seconds,
-                    candidate_configs=None,
+                    candidate_configs=None, inner_positive_log=positive, actual_gmv=actual,
+                    _selection_only=True,
                 )
                 if isinstance(outcome, FittedFoldModel):
-                    outcome.metadata["candidate_count"] = len(candidates)
-                    outcome.metadata["candidate_configs_capped"] = len(candidates) <= 12
-                    outcome.metadata["pilot_wall_clock_seconds"] = pilot_wall_clock_seconds
-                    return outcome
+                    score = float(outcome.metadata.get("inner_score", np.inf))
+                    if best is None or score < best[0]:
+                        best = (score, dict(candidate))
                 last_rejection = outcome
-            return last_rejection or ResourceRejection("ebm_pilot_timeout", 0, 0, available, int(available * fraction))
+            if best is None:
+                return last_rejection or ResourceRejection("ebm_pilot_timeout", 0, 0, available, int(available * fraction))
+            winner = fit_ebm_classifier(
+                X, y, fold, params=best[1], config=config, estimator_factory=estimator_factory,
+                available_memory=available, memory_estimator=memory_estimator, measured_overhead=measured_overhead,
+                overhead_estimator=overhead_estimator, max_rounds=max_rounds, groups=groups,
+                inner_bags=inner_bags, n_jobs=n_jobs, early_stopping_rounds=early_stopping_rounds,
+                max_configurations=1, pilot_wall_clock_seconds=pilot_wall_clock_seconds,
+                candidate_configs=None, inner_positive_log=positive, actual_gmv=actual,
+            )
+            if isinstance(winner, FittedFoldModel):
+                winner.metadata.update({"candidate_count": len(candidates), "candidate_configs_capped": len(candidates) <= 12,
+                                        "pilot_wall_clock_seconds": pilot_wall_clock_seconds,
+                                        "selected_params": dict(best[1])})
+            return winner
     estimate_fn = memory_estimator or estimate_ebm_memory
     estimated = int(estimate_fn(X, data_multiplier=1))
     # Lazy optional dependency boundary.
@@ -597,6 +657,11 @@ def fit_ebm_classifier(
     base.setdefault("validation_size", 0)
     base.setdefault("early_stopping_rounds", early_stopping_rounds if early_stopping_rounds is not None else 100)
     base.setdefault("random_state", 42)
+    start_time = time.perf_counter()
+    deadline = start_time + float(pilot_wall_clock_seconds)
+    def callback(bag_index, boosting_steps, made_progress, best_score):
+        return time.perf_counter() < deadline
+    base.setdefault("callback", callback)
     if base["n_jobs"] > 10:
         base["n_jobs"] = 10
     started = time.perf_counter()
@@ -604,7 +669,8 @@ def fit_ebm_classifier(
     # InterpretML accepts integer bags: +1 train and -1 validation. This is
     # explicit and avoids its random temporal split.
     bags = np.where(inner_train, 1, np.where(inner_valid, -1, 0)).astype(np.int8)
-    bags_outer = bags[outer_train]
+    bags_outer_1d = bags[outer_train]
+    bags_outer = np.repeat(bags_outer_1d[:, None], int(base["outer_bags"]), axis=1)
     overhead_fn = overhead_estimator
     if measured_overhead is not None:
         overhead = int(measured_overhead)
@@ -642,6 +708,12 @@ def fit_ebm_classifier(
     positive_rounds = rounds_array[np.isfinite(rounds_array) & (rounds_array > 0)] if rounds_array.ndim else rounds_array
     chosen_rounds = int(np.max(positive_rounds)) if np.size(positive_rounds) else int(max_rounds)
     chosen_rounds = max(1, chosen_rounds)
+    inner_probability = _positive_proba(inner, _slice(model_X, inner_valid))
+    inner_prediction = np.expm1(inner_probability * np.maximum(positive[inner_valid], 0.0))
+    inner_score = float(rmsle(actual[inner_valid], inner_prediction))
+    if _selection_only:
+        return FittedFoldModel(inner, chosen_rounds, float(time.perf_counter() - started), "ebm_classifier",
+                               fold.name, np.empty(0, dtype=float), metadata={"inner_score": inner_score})
     refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1,
                         early_stopping_rounds=0)
     refit = estimator_factory(**refit_params)

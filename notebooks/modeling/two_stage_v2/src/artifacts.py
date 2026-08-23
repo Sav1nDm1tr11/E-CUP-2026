@@ -157,6 +157,8 @@ def save_bundle(path: Path, bundle: ArtifactBundle) -> None:
         raise ValueError("ArtifactBundle requires 91 unique ordered feature names")
     if len(bundle.classifiers) != len(bundle.manifest.model_names):
         raise ValueError("ArtifactBundle classifiers do not match manifest model_names")
+    if bundle.calibrator is None:
+        raise ValueError("production ArtifactBundle requires a calibrator")
     save_manifest(target / "manifest.json", bundle.manifest)
     model_files: list[str] = []
     for index, (name, estimator) in enumerate(zip(bundle.manifest.model_names, bundle.classifiers)):
@@ -211,6 +213,8 @@ def load_bundle(
     calibrator_file = raw.get("calibrator_file")
     if not regressor_file:
         raise CheckpointMismatchError("bundle has no positive regressor")
+    if not calibrator_file:
+        raise CheckpointMismatchError("bundle has no required calibrator")
     positive_regressor = load_model(target / regressor_file)
     calibrator = load_model(target / calibrator_file) if calibrator_file else None
     return ArtifactBundle(
