@@ -1,0 +1,45 @@
+"""One-dimensional Platt (sigmoid) calibration."""
+
+from __future__ import annotations
+
+import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.linear_model import LogisticRegression
+from sklearn.utils.validation import check_is_fitted
+
+
+class SigmoidCalibrator(BaseEstimator, ClassifierMixin):
+    def __init__(self, epsilon: float = 1e-6):
+        self.epsilon = epsilon
+
+    def fit(self, probability, y):
+        p = np.asarray(probability, dtype=float).reshape(-1)
+        target = np.asarray(y).reshape(-1)
+        if len(p) != len(target) or len(p) == 0:
+            raise ValueError("probability and y must have equal non-zero length")
+        if not np.isfinite(p).all() or not np.isfinite(target.astype(float)).all():
+            raise ValueError("calibration inputs must be finite")
+        if not 0 < self.epsilon < 0.5:
+            raise ValueError("epsilon must be between zero and 0.5")
+        if len(np.unique(target)) < 2:
+            raise ValueError("Sigmoid calibration requires both target classes")
+        clipped = np.clip(p, self.epsilon, 1.0 - self.epsilon)
+        logit = np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
+        self.model_ = LogisticRegression(C=1e6, solver="lbfgs", random_state=42)
+        self.model_.fit(logit, target)
+        self.a = float(self.model_.coef_[0, 0])
+        self.b = float(self.model_.intercept_[0])
+        self.classes_ = self.model_.classes_
+        return self
+
+    def predict_proba(self, probability):
+        check_is_fitted(self, ("model_", "a", "b"))
+        p = np.asarray(probability, dtype=float).reshape(-1)
+        if not np.isfinite(p).all():
+            raise ValueError("probability must be finite")
+        clipped = np.clip(p, self.epsilon, 1.0 - self.epsilon)
+        result = self.model_.predict_proba(np.log(clipped / (1.0 - clipped)).reshape(-1, 1))
+        return np.clip(result, 0.0, 1.0)
+
+    def predict(self, probability):
+        return self.classes_[self.predict_proba(probability)[:, 1] >= 0.5]
