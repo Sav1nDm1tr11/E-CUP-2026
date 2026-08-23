@@ -101,12 +101,12 @@ def build_cutoff_summary(
     target = pd.to_numeric(frame[target_col], errors="coerce") if target_col in frame else pd.Series(0.0, index=frame.index)
     positive = frame[target_nonzero_col].astype(float) if target_nonzero_col in frame else (target > 0).astype(float)
     rows = []
-    for cutoff, indices in frame.groupby(cutoff_col, sort=True, dropna=False).groups.items():
-        values = target.loc[indices]
-        shares = positive.loc[indices]
+    for cutoff, positions in frame.groupby(cutoff_col, sort=True, dropna=False).indices.items():
+        values = target.iloc[positions]
+        shares = positive.iloc[positions]
         rows.append({
             "cutoff_date": cutoff,
-            "rows": int(len(indices)),
+            "rows": int(len(positions)),
             "positive_count": int(shares.fillna(0).sum()),
             "positive_share": float(shares.mean()) if len(shares) else np.nan,
             "total_gmv": float(values.fillna(0).sum()),
@@ -132,18 +132,25 @@ def build_missing_summary(frame: pd.DataFrame, *, top_n: int | None = None) -> p
 
 def build_fold_timeline(frame: pd.DataFrame | Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     """Normalize fold/cutoff information into a deterministic timeline table."""
-    columns = ["fold", "train_start", "train_end", "report_start", "report_end", "rows", "cutoff_date"]
+    columns = ["fold", "train_start", "train_end", "inner_start", "inner_end", "report_start", "report_end", "rows", "cutoff_date"]
     if isinstance(frame, pd.DataFrame):
         if frame.empty:
             return _empty(columns)
         fold = frame["fold"] if "fold" in frame else pd.Series(0, index=frame.index)
         cutoff = _column(frame, ["cutoff_date", "report_cutoff", "report_date"], pd.Series(pd.NaT, index=frame.index))
         rows = []
-        for current_fold, indices in frame.assign(__fold=fold).groupby("__fold", sort=True).groups.items():
-            dates = pd.to_datetime(pd.Series(cutoff).loc[indices], errors="coerce")
-            rows.append({"fold": current_fold, "train_start": pd.NaT, "train_end": pd.NaT,
-                         "report_start": dates.min(), "report_end": dates.max(), "rows": len(indices),
-                         "cutoff_date": dates.min() if dates.nunique(dropna=True) == 1 else pd.NaT})
+        for current_fold, positions in frame.assign(__fold=fold).groupby("__fold", sort=True).indices.items():
+            dates = pd.to_datetime(_values(cutoff)[positions], errors="coerce")
+            row = {"fold": current_fold, "rows": len(positions), "cutoff_date": dates.min() if dates.nunique(dropna=True) == 1 else pd.NaT}
+            for field in ("train_start", "train_end", "inner_start", "inner_end", "report_start", "report_end"):
+                if field in frame:
+                    values = pd.to_datetime(_values(frame[field])[positions], errors="coerce")
+                    row[field] = values.min() if field.endswith("start") else values.max()
+                else:
+                    row[field] = pd.NaT
+            row["report_start"] = row["report_start"] if pd.notna(row["report_start"]) else dates.min()
+            row["report_end"] = row["report_end"] if pd.notna(row["report_end"]) else dates.max()
+            rows.append(row)
         return pd.DataFrame(rows, columns=columns)
     values = list(frame or [])
     if not values:
@@ -168,15 +175,19 @@ def build_model_fold_metrics(metrics: pd.DataFrame | Sequence[Mapping[str, Any]]
     else:
         model_col = "model" if "model" in frame else "model_name" if "model_name" in frame else None
         fold_col = "fold" if "fold" in frame else "fold_id" if "fold_id" in frame else None
-        id_columns = [c for c in [model_col, fold_col, "cutoff_date"] if c]
+        id_columns = [c for c in [model_col, fold_col, "cutoff_date"] if c and c in frame.columns]
         value_columns = [c for c in frame.columns if c not in id_columns and pd.api.types.is_numeric_dtype(frame[c])]
         if not value_columns:
             return _empty(columns)
         result = frame.melt(id_vars=id_columns, value_vars=value_columns, var_name="metric", value_name="value")
-        result["model"] = frame[model_col].iloc[0] if model_col else "model"
         if model_col:
-            result["model"] = frame[model_col].astype(str).to_numpy().repeat(len(value_columns))
-        result["fold"] = frame[fold_col].to_numpy().repeat(len(value_columns)) if fold_col else 0
+            result = result.rename(columns={model_col: "model"})
+        else:
+            result["model"] = "model"
+        if fold_col:
+            result = result.rename(columns={fold_col: "fold"})
+        else:
+            result["fold"] = 0
         result = result.loc[:, columns]
     result["value"] = pd.to_numeric(result["value"], errors="coerce")
     return result.sort_values(["model", "fold", "metric"], kind="stable", ignore_index=True)
@@ -269,21 +280,17 @@ def build_probability_bins(
     predicted: Any | None = None,
     n_bins: int = 10,
 ) -> pd.DataFrame:
-    columns = ["bin", "bin_left", "bin_right", "count", "positive_rate", "mean_probability", "mean_squared_log_error"]
+    columns = ["bin", "bin_left", "bin_right", "count", "positive_rate", "mean_probability", "mean_squared_log_error", "squared_log_error"]
     if n_bins < 1:
         raise ValueError("n_bins must be positive")
+    if actual is None or predicted is None:
+        raise ValueError("actual and predicted are required for squared-log probability-bin errors")
     target, proba = _finite_pair(y_true, probability)
+    actual_values, pred_values = _finite_pair(actual, predicted)
+    if len(actual_values) != len(target):
+        raise ValueError("actual and predicted must have the same length as y_true")
     target = np.clip(target.astype(float), 0, 1)
     proba = np.clip(proba.astype(float), 0, 1)
-    if actual is None:
-        actual_values = target
-    else:
-        actual_values = _values(actual).reshape(-1).astype(float)
-        if len(actual_values) != len(target):
-            raise ValueError("actual must have the same length as y_true")
-    pred_values = np.zeros(len(target), dtype=float) if predicted is None else _values(predicted).reshape(-1).astype(float)
-    if len(pred_values) != len(target):
-        raise ValueError("predicted must have the same length as y_true")
     assignments = np.minimum((proba * n_bins).astype(int), n_bins - 1)
     rows = []
     for bin_index in range(n_bins):
@@ -292,25 +299,36 @@ def build_probability_bins(
         rows.append({"bin": bin_index, "bin_left": bin_index / n_bins, "bin_right": (bin_index + 1) / n_bins,
                      "count": int(mask.sum()), "positive_rate": float(target[mask].mean()) if mask.any() else np.nan,
                      "mean_probability": float(proba[mask].mean()) if mask.any() else np.nan,
-                     "mean_squared_log_error": float(losses.mean()) if mask.any() else np.nan})
+                     "mean_squared_log_error": float(losses.mean()) if mask.any() else np.nan,
+                     "squared_log_error": float(losses.sum()) if mask.any() else 0.0})
     return pd.DataFrame(rows, columns=columns)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
-    return {name: getattr(value, name) for name in ("weights", "model_names", "diagnostics", "objective", "point_delta", "delta", "ci_low", "ci_high") if hasattr(value, name)}
+    return {name: getattr(value, name) for name in ("weights", "model_names", "diagnostics", "objective", "point_delta", "delta", "ci_low", "ci_high", "trained_through") if hasattr(value, name)}
 
 
 def build_blend_weights(state: Any) -> pd.DataFrame:
-    columns = ["model", "weight"]
+    columns = ["model", "weight", "trained_through", "report_cutoff"]
+    if isinstance(state, pd.DataFrame):
+        frame = state.copy()
+        if "model" not in frame or "weight" not in frame:
+            return _empty(columns)
+        for column in columns:
+            if column not in frame:
+                frame[column] = pd.NaT if column in {"trained_through", "report_cutoff"} else np.nan
+        return frame.loc[:, columns].sort_values(["trained_through", "report_cutoff", "model"], kind="stable", na_position="last", ignore_index=True)
     value = _mapping(state)
     weights = value.get("weights", [])
     weights = np.asarray(weights, dtype=float).reshape(-1)
     names = list(value.get("model_names") or [f"model_{i}" for i in range(len(weights))])
     if len(names) < len(weights):
         names.extend(f"model_{i}" for i in range(len(names), len(weights)))
-    return pd.DataFrame({"model": names[:len(weights)], "weight": weights}, columns=columns)
+    trained_through = value.get("trained_through", pd.NaT)
+    return pd.DataFrame({"model": names[:len(weights)], "weight": weights,
+                         "trained_through": trained_through, "report_cutoff": pd.NaT}, columns=columns)
 
 
 def build_simplex_landscape(diagnostics: Any) -> pd.DataFrame:
@@ -359,10 +377,14 @@ def build_segment_heatmap(
         return _empty(columns)
     actual, predicted = _finite_pair(frame[actual_col], frame[prediction_col])
     rows = []
-    for segment, indices in frame.groupby(segment_col, sort=True, dropna=False).groups.items():
-        positions = np.asarray(frame.index.get_indexer(indices))
+    group_columns = [segment_col] + (["model"] if "model" in frame else [])
+    for keys, positions in frame.groupby(group_columns, sort=True, dropna=False).indices.items():
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        segment = keys[0]
+        model = keys[1] if len(keys) > 1 else None
+        positions = np.asarray(positions, dtype=int)
         loss = np.square(np.log1p(np.maximum(actual[positions], 0)) - np.log1p(np.maximum(predicted[positions], 0)))
-        rows.append({"segment": segment, "metric": "RMSLE", "value": float(np.sqrt(loss.mean())) if len(loss) else np.nan, "count": int(len(loss))})
+        rows.append({"segment": segment, "metric": model or "RMSLE", "value": float(np.sqrt(loss.mean())) if len(loss) else np.nan, "count": int(len(loss))})
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -415,7 +437,21 @@ def _plot_table(table: pd.DataFrame, *, title: str, xlabel: str, ylabel: str, pa
 
 
 def plot_cutoff_summary(table, *, path=None):
-    return _plot_table(table, title="Сводка по отсечениям", xlabel="Отсечение", ylabel="Доля положительных", path=path, kind="line", value_col="positive_share")
+    figure, left = _new_figure()
+    if not table.empty:
+        x = np.arange(len(table))
+        left.plot(x, table["rows"], marker="o", label="Строки", color="tab:blue")
+        right = left.twinx()
+        right.plot(x, table["positive_share"], marker="s", label="Доля положительных", color="tab:orange")
+        left.set_xticks(x, table["cutoff_date"].astype(str), rotation=35, ha="right")
+        left.set_ylabel("Число строк")
+        right.set_ylabel("Доля положительных")
+        handles, labels = left.get_legend_handles_labels()
+        handles2, labels2 = right.get_legend_handles_labels()
+        left.legend(handles + handles2, labels + labels2)
+    left.set_title("Сводка по отсечениям")
+    left.set_xlabel("Отсечение")
+    return _finish(figure, path)
 
 
 def plot_missing_summary(table, *, path=None):
@@ -423,11 +459,33 @@ def plot_missing_summary(table, *, path=None):
 
 
 def plot_fold_timeline(table, *, path=None):
-    return _plot_table(table, title="Временная схема фолдов", xlabel="Фолд", ylabel="Число строк", path=path, value_col="rows")
+    figure, axis = _new_figure(figsize=(8, 4))
+    date_columns = [column for column in ("train_start", "train_end", "inner_start", "inner_end", "report_start", "report_end") if column in table]
+    for column in date_columns:
+        values = pd.to_datetime(table[column], errors="coerce")
+        mask = values.notna()
+        if mask.any():
+            axis.plot(values[mask], table.loc[mask, "fold"], marker="o", label=column.replace("_", " "))
+    axis.set_title("Временная схема фолдов")
+    axis.set_xlabel("Дата")
+    axis.set_ylabel("Фолд")
+    if date_columns:
+        axis.legend()
+    figure.autofmt_xdate()
+    return _finish(figure, path)
 
 
 def plot_model_fold_metrics(table, *, path=None):
-    return _plot_table(table, title="Метрики модели и фолда", xlabel="Модель", ylabel="Метрика", path=path)
+    figure, axis = _new_figure()
+    if not table.empty:
+        for (model, fold, metric), group in table.groupby(["model", "fold", "metric"], sort=True):
+            axis.plot(group.index, group["value"], marker="o", label=f"{model} / fold {fold} / {metric}")
+    axis.set_title("Метрики модели и фолда")
+    axis.set_xlabel("Наблюдение")
+    axis.set_ylabel("Значение метрики")
+    if not table.empty:
+        axis.legend(fontsize="small")
+    return _finish(figure, path)
 
 
 def plot_reliability(table, *, path=None):
@@ -463,18 +521,43 @@ def plot_probability_bins(table, *, path=None):
 
 
 def plot_blend_weights(table, *, path=None):
-    return _plot_table(table, title="Веса ансамбля", xlabel="Модель", ylabel="Вес", path=path, value_col="weight")
+    figure, axis = _new_figure()
+    has_history = not table.empty and any(
+        column in table and pd.to_datetime(table[column], errors="coerce").notna().any()
+        for column in ("trained_through", "report_cutoff")
+    )
+    if has_history:
+        date_col = "report_cutoff" if "report_cutoff" in table else "trained_through"
+        for model, group in table.groupby("model", sort=True):
+            axis.plot(pd.to_datetime(group[date_col], errors="coerce"), group["weight"], marker="o", label=str(model))
+        axis.set_xlabel("Дата отсечения")
+        axis.legend(title="Модель")
+    elif not table.empty:
+        axis.bar(table["model"].astype(str), table["weight"], label="Вес")
+        axis.set_xlabel("Модель")
+        axis.legend()
+    axis.set_title("Веса ансамбля по временным отсечениям")
+    axis.set_ylabel("Вес")
+    figure.autofmt_xdate()
+    return _finish(figure, path)
 
 
 def plot_simplex_landscape(table, *, path=None):
     figure, axis = _new_figure()
     if not table.empty:
-        x = table["weight_0"] if "weight_0" in table else np.arange(len(table))
-        scatter = axis.scatter(x, table["objective"], c=table["objective"], cmap="viridis")
+        if {"weight_0", "weight_1", "weight_2"}.issubset(table.columns):
+            x = table["weight_1"] + 0.5 * table["weight_2"]
+            y = np.sqrt(3) / 2 * table["weight_2"]
+            xlabel, ylabel = "w₁ + 0.5·w₂", "√3/2·w₂"
+        else:
+            x = table["weight_0"] if "weight_0" in table else np.arange(len(table))
+            y = table["objective"]
+            xlabel, ylabel = "Вес модели 0", "Целевая RMSLE"
+        scatter = axis.scatter(x, y, c=table["objective"], cmap="viridis", label="Кандидат")
         figure.colorbar(scatter, ax=axis, label="RMSLE / objective")
     axis.set_title("Ландшафт simplex по RMSLE")
-    axis.set_xlabel("Вес модели 0")
-    axis.set_ylabel("Целевая RMSLE")
+    axis.set_xlabel(xlabel if not table.empty else "Вес модели 0")
+    axis.set_ylabel(ylabel if not table.empty else "Целевая RMSLE")
     return _finish(figure, path)
 
 
@@ -492,7 +575,19 @@ def plot_bootstrap_interval(table, *, path=None):
 
 
 def plot_segment_heatmap(table, *, path=None):
-    return _plot_table(table, title="RMSLE по сегментам", xlabel="Сегмент", ylabel="RMSLE", path=path, value_col="value")
+    if isinstance(table, pd.DataFrame) and "value" not in table and {"target_gmv_30d", "prediction"}.issubset(table.columns):
+        table = build_segment_heatmap(table)
+    figure, axis = _new_figure()
+    if not table.empty:
+        matrix = table.pivot_table(index="segment", columns="metric", values="value", aggfunc="first")
+        image = axis.imshow(matrix.to_numpy(dtype=float), aspect="auto", cmap="viridis")
+        axis.set_xticks(range(len(matrix.columns)), matrix.columns, rotation=35, ha="right")
+        axis.set_yticks(range(len(matrix.index)), matrix.index)
+        figure.colorbar(image, ax=axis, label="RMSLE")
+    axis.set_title("RMSLE по сегментам")
+    axis.set_xlabel("Модель / метрика")
+    axis.set_ylabel("Сегмент")
+    return _finish(figure, path)
 
 
 def plot_inference_comparison(table, *, path=None):
@@ -514,7 +609,22 @@ def plot_probability_distribution(probabilities: Mapping[str, Any] | pd.DataFram
 
 
 def plot_learning_curves(table, *, path=None):
-    return _plot_table(table, title="Кривые обучения", xlabel="Итерация", ylabel="Метрика", path=path, kind="line")
+    figure, axis = _new_figure()
+    if isinstance(table, pd.DataFrame) and not table.empty:
+        model_col = "model" if "model" in table else "model_name" if "model_name" in table else None
+        fold_col = "fold" if "fold" in table else "fold_id" if "fold_id" in table else None
+        iteration_col = "iteration" if "iteration" in table else "step" if "step" in table else table.columns[0]
+        metric_col = "metric" if "metric" in table else "value" if "value" in table else table.columns[-1]
+        group_columns = [column for column in (model_col, fold_col) if column]
+        groups = table.groupby(group_columns, sort=True) if group_columns else [("model", table)]
+        for key, group in groups:
+            label = " / ".join(map(str, key if isinstance(key, tuple) else (key,)))
+            axis.plot(group[iteration_col], group[metric_col], marker="o", label=label)
+        axis.legend(title="Модель / фолд")
+    axis.set_title("Кривые обучения")
+    axis.set_xlabel("Итерация")
+    axis.set_ylabel("Метрика")
+    return _finish(figure, path)
 
 
 # Short aliases make the notebook API pleasant while retaining explicit names.

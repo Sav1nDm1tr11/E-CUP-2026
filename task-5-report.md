@@ -17,11 +17,24 @@
 - TP/FP/FN/TN contribution считает squared-log loss на исходных парах и
   точно раскладывает общий squared-log error по четырём классам.
 
+## Исправления Task 5 follow-up
+
+- Исправлено сохранение соответствий `model/fold/metric/value` при wide-to-tidy
+  melt; cutoff/id поля больше не теряются и не размножаются вручную.
+- Probability bins теперь требуют `actual` и `predicted` и считают как средний,
+  так и суммарный squared-log error; сумма bin contributions проверяется до
+  общего squared-log error.
+- Группировки используют positional indices, поэтому duplicate DataFrame index
+  не искажает segment/cutoff diagnostics.
+- Cutoff, fold timeline, model/fold metrics, blend history, simplex (включая
+  3-model barycentric projection), segment heatmap и learning curves получили
+  семантические multi-series axes/legends.
+
 ## Проверки
 
-- `py -3.14 -m unittest tests.test_diagnostics -v`: **4/4 OK**.
+- `py -3.14 -m unittest tests.test_diagnostics -v`: **7/7 OK**.
 - `py -3.14 -m compileall -q src tests`: **OK**.
-- Полный v2 suite: **45 OK, 1 ожидаемый fail** — `test_environment` сообщает
+- Полный v2 suite: **48 OK, 1 ожидаемый fail** — `test_environment` сообщает
   отсутствующую optional dependency `interpret`; этот blocker не относится к
   diagnostics.
 
