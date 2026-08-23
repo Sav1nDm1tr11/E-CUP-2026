@@ -64,6 +64,16 @@ class DataContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_submission(actual.iloc[::-1].reset_index(drop=True), expected, expected_rows=2)
 
+    def test_feature_validation_allows_missing_values_but_rejects_infinity(self):
+        from src.validation import validate_feature_matrix
+        names = tuple(f"feature_{i}" for i in range(91))
+        frame = pd.DataFrame(np.zeros((2, 91)), columns=names)
+        frame.iloc[0, 0] = np.nan
+        validate_feature_matrix(frame, names)
+        frame.iloc[0, 0] = np.inf
+        with self.assertRaises(ValueError):
+            validate_feature_matrix(frame, names)
+
     def test_feature_columns_are_loaded_as_a_stable_tuple(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "feature_columns.json"

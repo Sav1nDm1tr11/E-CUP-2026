@@ -7,8 +7,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
 from sklearn.base import BaseEstimator
+from sklearn.metrics import brier_score_loss, log_loss
+from sklearn.utils.validation import check_is_fitted
 
 from .calibration import SigmoidCalibrator
 from .metrics import rmsle
@@ -22,6 +23,18 @@ class BlendState:
     epsilon: float
     objective: float
     trained_through: pd.Timestamp
+    diagnostics: tuple[dict[str, Any], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "weights": list(self.weights),
+            "calibrator_a": self.calibrator_a,
+            "calibrator_b": self.calibrator_b,
+            "epsilon": self.epsilon,
+            "objective": self.objective,
+            "trained_through": pd.Timestamp(self.trained_through).isoformat(),
+            "diagnostics": [dict(item) for item in self.diagnostics],
+        }
 
 
 @dataclass(frozen=True)
@@ -64,10 +77,13 @@ class ConvexProbabilityBlender(BaseEstimator):
         return self
 
     def transform(self, probabilities):
-        weights = getattr(self, "weights_", np.asarray(self.weights, dtype=float))
+        check_is_fitted(self, "weights_")
+        weights = self.weights_
         values = np.asarray(probabilities, dtype=float)
         if values.ndim != 2 or values.shape[1] != len(weights):
             raise ValueError("probabilities shape does not match weights")
+        if not np.isfinite(values).all():
+            raise ValueError("probabilities must be finite")
         return values @ weights
 
     def predict_proba(self, probabilities):
@@ -91,41 +107,71 @@ def _config_value(config: Any, key: str, default: Any = None):
     return getattr(config, key, default)
 
 
-def fit_walk_forward_blend(past_oof, positive_log, actual_gmv, config) -> BlendState:
+def fit_walk_forward_blend(past_oof, positive_log, actual_gmv, config, *, trained_through=None) -> BlendState:
     if not isinstance(past_oof, pd.DataFrame) or past_oof.empty:
         raise ValueError("past_oof must be a non-empty DataFrame")
-    model_columns = [c for c in ("p_lgbm", "p_catboost", "p_ebm") if c in past_oof.columns]
-    if not model_columns:
-        raise ValueError("past_oof must contain at least one base probability column")
+    required_probability_columns = ("p_lgbm", "p_catboost")
+    if not all(column in past_oof.columns for column in required_probability_columns):
+        raise ValueError("past_oof must contain p_lgbm and p_catboost")
+    model_columns = [c for c in (*required_probability_columns, "p_ebm") if c in past_oof.columns]
     positive = np.asarray(positive_log, dtype=float).reshape(-1)
     actual = np.asarray(actual_gmv, dtype=float).reshape(-1)
     if len(positive) != len(past_oof) or len(actual) != len(past_oof):
         raise ValueError("OOF and target lengths must match")
     if not np.isfinite(positive).all() or not np.isfinite(actual).all() or (actual < 0).any():
         raise ValueError("OOF values and actual_gmv must be finite; actual_gmv non-negative")
-    if "cutoff_date" in past_oof:
-        cutoff = pd.to_datetime(past_oof["cutoff_date"])
-        trained_through = pd.Timestamp(_config_value(config, "trained_through", cutoff.max()))
-        if (cutoff > trained_through).any():
-            raise ValueError("past_oof contains rows later than trained_through")
-    else:
-        trained_through = pd.Timestamp(_config_value(config, "trained_through", pd.Timestamp.max))
+    if "cutoff_date" not in past_oof.columns:
+        raise ValueError("past_oof must contain cutoff_date")
+    cutoff = pd.to_datetime(past_oof["cutoff_date"], errors="coerce")
+    if cutoff.isna().any():
+        raise ValueError("past_oof cutoff_date must be non-null and valid")
+    explicit_trained_through = trained_through
+    if explicit_trained_through is None:
+        explicit_trained_through = _config_value(config, "trained_through", None)
+    if explicit_trained_through is None:
+        raise ValueError("trusted trained_through must be supplied explicitly")
+    trained_through = pd.Timestamp(explicit_trained_through)
+    if pd.isna(trained_through) or (cutoff > trained_through).any():
+        raise ValueError("past_oof contains rows later than trusted trained_through")
     target = (actual > 0).astype(np.int8)
     if "target_nonzero" in past_oof:
-        target = np.asarray(past_oof["target_nonzero"], dtype=np.int8)
+        target = np.asarray(past_oof["target_nonzero"])
+    from .validation import validate_target_contract
+    validate_target_contract(actual, target)
     probabilities = past_oof[model_columns].to_numpy(dtype=float)
     if not np.isfinite(probabilities).all():
         raise ValueError("OOF probabilities must be finite")
     step = float(_config_value(config, "simplex_step", 0.05))
+    max_logloss_degradation = float(_config_value(config, "max_logloss_degradation", 0.02))
+    max_brier_degradation = float(_config_value(config, "max_brier_degradation", 0.02))
+    diagnostics: list[dict[str, Any]] = []
     best: tuple[float, np.ndarray, SigmoidCalibrator] | None = None
     for weights in simplex_grid(len(model_columns), step):
         raw = np.clip(probabilities @ weights, 0.0, 1.0)
         calibrator = SigmoidCalibrator().fit(raw, target)
         calibrated = calibrator.predict_proba(raw)[:, 1]
         objective = rmsle(actual, combine_predictions(calibrated, positive).prediction)
+        raw_logloss = float(log_loss(target, raw, labels=[0, 1]))
+        calibrated_logloss = float(log_loss(target, calibrated, labels=[0, 1]))
+        raw_brier = float(brier_score_loss(target, raw))
+        calibrated_brier = float(brier_score_loss(target, calibrated))
+        accepted = (
+            calibrated_logloss <= raw_logloss + max_logloss_degradation
+            and calibrated_brier <= raw_brier + max_brier_degradation
+        )
+        diagnostics.append({
+            "weights": [float(value) for value in weights], "objective": float(objective),
+            "raw_logloss": raw_logloss, "calibrated_logloss": calibrated_logloss,
+            "raw_brier": raw_brier, "calibrated_brier": calibrated_brier,
+            "accepted": bool(accepted),
+        })
+        if not accepted:
+            continue
         if best is None or objective < best[0]:
             best = (objective, weights.copy(), calibrator)
-    assert best is not None
+    if best is None:
+        raise ValueError("No blend candidate satisfied logloss/Brier degradation constraints")
     objective, weights, calibrator = best
     return BlendState(tuple(float(v) for v in weights), float(calibrator.a), float(calibrator.b),
-                      float(calibrator.epsilon), float(objective), trained_through)
+                      float(calibrator.epsilon), float(objective), trained_through,
+                      tuple(diagnostics))

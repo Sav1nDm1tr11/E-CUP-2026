@@ -1,4 +1,4 @@
-# Task 3 report
+# Task 3 report (hardened review pass)
 
 ## Implemented
 
@@ -13,6 +13,8 @@ Created the seven owned core modules under `notebooks/modeling/two_stage_v2/src/
 - sklearn-compatible sigmoid calibration;
 - deterministic convex simplex blending, soft-log/expm1 prediction, and serializable past-only `BlendState`.
 
+Review hardening additionally makes the blend boundary an explicit trusted input, requires `cutoff_date` plus both `p_lgbm` and `p_catboost`, validates binary target consistency, enforces configurable logloss/Brier degradation limits, and records JSON-safe candidate diagnostics. Feature validation now permits NaN but rejects infinity without a full float64 matrix copy; bootstrap samples retain every fold; and default configuration contains the approved cutoff/report dates and explicit search budgets.
+
 ## Verification
 
 Focused command (Python 3.14):
@@ -22,7 +24,7 @@ Set-Location notebooks/modeling/two_stage_v2
 & 'C:\Users\savin\AppData\Local\Programs\Python\Python314\python.exe' -m unittest tests.test_data_contract tests.test_temporal_split tests.test_metrics tests.test_calibration tests.test_blending -v
 ```
 
-Result: **15 tests passed**.
+Result: **19 tests passed** (including review regression tests).
 
 Full v2 command:
 
@@ -30,7 +32,7 @@ Full v2 command:
 & 'C:\Users\savin\AppData\Local\Programs\Python\Python314\python.exe' -m unittest discover -s tests -v
 ```
 
-Result: Task 3 tests passed; remaining collection errors are the expected unimplemented Task 4 modules (`src.models`, `src.artifacts`, `src.inference`). The environment test also remains red because the pre-existing `interpret` distribution is not installed.
+Result: Task 3 tests passed; remaining collection errors are the expected unimplemented Task 4 modules (`src.models`, `src.artifacts`, `src.inference`). The environment test also remains red because the pre-existing `interpret` distribution is not installed. Full suite now discovers 23 tests: 19 Task 3 passes, 3 expected Task 4 import errors, and the one environment dependency failure.
 
 ## Test correction
 

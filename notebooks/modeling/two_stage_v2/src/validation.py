@@ -25,9 +25,10 @@ def validate_feature_matrix(features: pd.DataFrame, expected_columns: Sequence[s
     bad = [c for c in features.columns if not is_numeric_dtype(features[c])]
     if bad:
         raise ValueError(f"Non-numeric features: {bad}")
-    values = features.to_numpy(dtype=np.float64, copy=False)
-    if not np.isfinite(values).all():
-        raise ValueError("Feature matrix contains NaN or infinity")
+    for column in features.columns:
+        values = features[column].to_numpy(copy=False)
+        if np.isinf(values).any():
+            raise ValueError(f"Feature {column} contains infinity")
 
 
 def validate_target_contract(target_gmv: Sequence[float], target_nonzero: Sequence[int]) -> None:

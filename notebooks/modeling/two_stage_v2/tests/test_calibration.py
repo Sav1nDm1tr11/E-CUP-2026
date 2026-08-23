@@ -20,3 +20,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertGreater(result[-1, 1], result[0, 1])
         self.assertNotEqual(result[0, 1], result[1, 1])
         self.assertEqual(clone(calibrator).get_params(), calibrator.get_params())
+
+    def test_sigmoid_calibrator_requires_exact_binary_labels(self):
+        with self.assertRaises(ValueError):
+            SigmoidCalibrator().fit(np.array([0.1, 0.9]), np.array([1, 2]))

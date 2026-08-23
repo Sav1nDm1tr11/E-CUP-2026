@@ -44,3 +44,32 @@ class BlendingTests(unittest.TestCase):
             fit_walk_forward_blend(future, positive_log=future["predicted_positive_log"],
                                    actual_gmv=future["target_gmv_30d"],
                                    config={"trained_through": pd.Timestamp("2025-06-18")})
+
+    def test_walk_forward_blend_requires_trusted_cutoff_and_all_required_models(self):
+        past = pd.DataFrame({
+            "cutoff_date": pd.to_datetime(["2025-05-19", "2025-06-18"]),
+            "p_lgbm": [0.2, 0.8], "p_catboost": [0.3, 0.7],
+            "predicted_positive_log": [1.0, 2.0], "target_gmv_30d": [0.0, 3.0],
+            "target_nonzero": [0, 1],
+        })
+        with self.assertRaises(ValueError):
+            fit_walk_forward_blend(past, past["predicted_positive_log"], past["target_gmv_30d"], {})
+        with self.assertRaises(ValueError):
+            fit_walk_forward_blend(past.drop(columns="cutoff_date"), past["predicted_positive_log"],
+                                   past["target_gmv_30d"], {"trained_through": "2025-06-18"})
+        with self.assertRaises(ValueError):
+            fit_walk_forward_blend(past.drop(columns="p_catboost"), past["predicted_positive_log"],
+                                   past["target_gmv_30d"], {"trained_through": "2025-06-18"})
+
+    def test_blend_state_contains_serializable_metric_diagnostics(self):
+        past = pd.DataFrame({
+            "cutoff_date": pd.to_datetime(["2025-05-19", "2025-06-18"]),
+            "p_lgbm": [0.2, 0.8], "p_catboost": [0.3, 0.7],
+            "predicted_positive_log": [1.0, 2.0], "target_gmv_30d": [0.0, 3.0],
+            "target_nonzero": [0, 1],
+        })
+        state = fit_walk_forward_blend(past, past["predicted_positive_log"], past["target_gmv_30d"],
+                                       {"trained_through": pd.Timestamp("2025-06-18")})
+        self.assertTrue(state.diagnostics)
+        self.assertIn("calibrated_logloss", state.diagnostics[0])
+        self.assertEqual(state.to_dict()["trained_through"], "2025-06-18T00:00:00")

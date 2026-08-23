@@ -12,6 +12,8 @@ def rmsle(actual, predicted) -> float:
     y_pred = np.asarray(predicted, dtype=float)
     if y_true.shape != y_pred.shape or y_true.ndim != 1:
         raise ValueError("actual and predicted must be equally sized one-dimensional arrays")
+    if len(y_true) == 0:
+        raise ValueError("RMSLE inputs must not be empty")
     if not np.isfinite(y_true).all() or not np.isfinite(y_pred).all():
         raise ValueError("RMSLE inputs must be finite")
     if (y_true < 0).any() or (y_pred < 0).any():
@@ -53,8 +55,8 @@ def paired_cluster_bootstrap_delta(
             if len(selected) == 0:
                 continue
             by_fold.append(rmsle(actual[selected], candidate[selected]) - rmsle(actual[selected], baseline[selected]))
-        if not by_fold:
-            raise ValueError("Bootstrap sample contains no folds")
+        if len(by_fold) != len(unique_folds):
+            raise ValueError("Bootstrap sample must contain every fold")
         return float(np.mean(by_fold))
 
     point = score(np.arange(n))
@@ -62,8 +64,13 @@ def paired_cluster_bootstrap_delta(
     values = np.empty(n_resamples, dtype=float)
     group_rows = {key: np.flatnonzero(groups == key) for key in unique_groups}
     for i in range(n_resamples):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        indices = np.concatenate([group_rows[key] for key in sampled])
+        for _ in range(1000):
+            sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+            indices = np.concatenate([group_rows[key] for key in sampled])
+            if set(folds[indices]) == set(unique_folds):
+                break
+        else:
+            raise ValueError("Unable to construct a bootstrap sample containing every fold")
         values[i] = score(indices)
     low, high = np.percentile(values, [2.5, 97.5])
     return BootstrapDelta(point, point, float(low), float(high), int(n_resamples))

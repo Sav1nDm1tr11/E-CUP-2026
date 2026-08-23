@@ -40,8 +40,10 @@ def read_dataset_contract(path: Path) -> DatasetContract:
     path = Path(path)
     schema = ds.dataset(path).schema
     names = tuple(schema.names)
-    if "cutoff_date" not in names:
-        raise ValueError("Dataset must contain cutoff_date")
+    required = {"user_id", "cutoff_date", "target_gmv_30d", "target_nonzero"}
+    missing_required = sorted(required.difference(names))
+    if missing_required:
+        raise ValueError(f"Dataset is missing required contract columns: {missing_required}")
     features = _feature_columns(names)
     if len(features) != 91:
         raise ValueError(f"Expected exactly 91 ordered features, got {len(features)}")
@@ -80,6 +82,8 @@ def load_cutoff_frame(
             expression = expression & (ds.field("target_gmv_30d") > 0)
         elif "target_nonzero" in dataset.schema.names:
             expression = expression & (ds.field("target_nonzero") == 1)
+        else:
+            raise ValueError("positive_only requires target_gmv_30d or target_nonzero")
     frame = dataset.to_table(filter=expression, columns=list(requested)).to_pandas()
     if "cutoff_date" in frame:
         frame["cutoff_date"] = pd.to_datetime(frame["cutoff_date"])

@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.utils.validation import check_is_fitted
 
 
-class SigmoidCalibrator(BaseEstimator, ClassifierMixin):
+class SigmoidCalibrator(ClassifierMixin, BaseEstimator):
     def __init__(self, epsilon: float = 1e-6):
         self.epsilon = epsilon
 
@@ -21,8 +21,8 @@ class SigmoidCalibrator(BaseEstimator, ClassifierMixin):
             raise ValueError("calibration inputs must be finite")
         if not 0 < self.epsilon < 0.5:
             raise ValueError("epsilon must be between zero and 0.5")
-        if len(np.unique(target)) < 2:
-            raise ValueError("Sigmoid calibration requires both target classes")
+        if set(np.unique(target).tolist()) != {0, 1}:
+            raise ValueError("Sigmoid calibration labels must be exactly {0, 1}")
         clipped = np.clip(p, self.epsilon, 1.0 - self.epsilon)
         logit = np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
         self.model_ = LogisticRegression(C=1e6, solver="lbfgs", random_state=42)
@@ -42,4 +42,7 @@ class SigmoidCalibrator(BaseEstimator, ClassifierMixin):
         return np.clip(result, 0.0, 1.0)
 
     def predict(self, probability):
-        return self.classes_[self.predict_proba(probability)[:, 1] >= 0.5]
+        check_is_fitted(self, "model_")
+        p = np.asarray(probability, dtype=float).reshape(-1)
+        clipped = np.clip(p, self.epsilon, 1.0 - self.epsilon)
+        return self.model_.predict(np.log(clipped / (1.0 - clipped)).reshape(-1, 1))
