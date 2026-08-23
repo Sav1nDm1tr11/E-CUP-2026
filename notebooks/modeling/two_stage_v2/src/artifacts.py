@@ -132,8 +132,12 @@ def validate_manifest(
                                     ("data", data_sha256, manifest.data_sha256)):
         if expected is not None and expected != actual:
             raise CheckpointMismatchError(f"{label} hash mismatch")
-    if feature_names is not None and sha256_json(list(feature_names)) != manifest.feature_sha256:
-        raise CheckpointMismatchError("feature order/hash mismatch")
+    if feature_names is not None:
+        names = tuple(feature_names)
+        if len(names) != 91 or len(set(names)) != 91:
+            raise CheckpointMismatchError("feature contract must contain 91 unique ordered names")
+        if sha256_json(list(names)) != manifest.feature_sha256:
+            raise CheckpointMismatchError("feature order/hash mismatch")
     if model_names is not None and tuple(model_names) != manifest.model_names:
         raise CheckpointMismatchError("model names do not match manifest")
     if weights is not None:
@@ -149,9 +153,29 @@ def validate_manifest(
 def save_bundle(path: Path, bundle: ArtifactBundle) -> None:
     target = Path(path)
     target.mkdir(parents=True, exist_ok=True)
+    if len(bundle.feature_names) != 91 or len(set(bundle.feature_names)) != 91:
+        raise ValueError("ArtifactBundle requires 91 unique ordered feature names")
+    if len(bundle.classifiers) != len(bundle.manifest.model_names):
+        raise ValueError("ArtifactBundle classifiers do not match manifest model_names")
     save_manifest(target / "manifest.json", bundle.manifest)
-    save_json(target / "bundle.json", {"feature_names": list(bundle.feature_names), "model_names": list(bundle.manifest.model_names),
-                                        "weights": list(bundle.manifest.weights)})
+    model_files: list[str] = []
+    for index, (name, estimator) in enumerate(zip(bundle.manifest.model_names, bundle.classifiers)):
+        lowered = name.lower()
+        suffix = ".txt" if "lgbm" in lowered or "lightgbm" in lowered else ".cbm" if "catboost" in lowered else ".pkl"
+        filename = f"classifier_{index}{suffix}"
+        save_model(target / filename, estimator)
+        model_files.append(filename)
+    regressor_file = "positive_regressor.txt" if getattr(bundle.positive_regressor, "booster_", None) is not None else "positive_regressor.pkl"
+    save_model(target / regressor_file, bundle.positive_regressor)
+    calibrator_file = None
+    if bundle.calibrator is not None:
+        calibrator_file = "calibrator.pkl"
+        save_model(target / calibrator_file, bundle.calibrator)
+    save_json(target / "bundle.json", {
+        "feature_names": list(bundle.feature_names), "model_names": list(bundle.manifest.model_names),
+        "weights": list(bundle.manifest.weights), "classifier_files": model_files,
+        "positive_regressor_file": regressor_file, "calibrator_file": calibrator_file,
+    })
 
 
 def load_bundle_metadata(path: Path) -> dict[str, Any]:
@@ -164,16 +188,34 @@ def load_bundle_metadata(path: Path) -> dict[str, Any]:
 def load_bundle(
     path: Path,
     *,
-    classifiers: Sequence[Any] = (),
-    positive_regressor: Any = None,
-    calibrator: Any = None,
+    expected_config_sha256: str | None = None,
+    expected_feature_sha256: str | None = None,
+    expected_data_sha256: str | None = None,
+    expected_version: int = 1,
 ) -> ArtifactBundle:
-    """Load and validate bundle metadata before handing models to inference."""
-    metadata = load_bundle_metadata(path)
-    manifest = metadata["manifest"]
+    """Load every model component and validate provenance before inference."""
+    if expected_config_sha256 is None or expected_feature_sha256 is None or expected_data_sha256 is None:
+        raise ValueError("expected config, feature, and data hashes are required")
+    target = Path(path)
+    manifest = load_manifest(target / "manifest.json", expected_version=expected_version)
+    raw = load_json(target / "bundle.json")
+    validate_manifest(manifest, config_sha256=expected_config_sha256,
+                      feature_sha256=expected_feature_sha256, data_sha256=expected_data_sha256,
+                      feature_names=raw.get("feature_names"), model_names=raw.get("model_names"),
+                      weights=raw.get("weights"))
+    classifier_files = tuple(raw.get("classifier_files", ()))
+    if len(classifier_files) != len(manifest.model_names):
+        raise CheckpointMismatchError("bundle classifier files are not aligned with manifest")
+    classifiers = tuple(load_model(target / filename) for filename in classifier_files)
+    regressor_file = raw.get("positive_regressor_file")
+    calibrator_file = raw.get("calibrator_file")
+    if not regressor_file:
+        raise CheckpointMismatchError("bundle has no positive regressor")
+    positive_regressor = load_model(target / regressor_file)
+    calibrator = load_model(target / calibrator_file) if calibrator_file else None
     return ArtifactBundle(
         manifest=manifest,
-        feature_names=tuple(metadata["feature_names"]),
+        feature_names=tuple(raw["feature_names"]),
         classifiers=tuple(classifiers),
         positive_regressor=positive_regressor,
         calibrator=calibrator,

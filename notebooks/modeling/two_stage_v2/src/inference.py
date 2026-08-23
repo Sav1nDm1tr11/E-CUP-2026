@@ -109,11 +109,11 @@ def _bundle_values(bundle: Any) -> dict[str, Any]:
 def predict_ensemble(
     frame: pd.DataFrame,
     *,
-    classifiers: Sequence[Any],
-    positive_regressor: Any,
+    classifiers: Sequence[Any] | None = None,
+    positive_regressor: Any = None,
     calibrator: Any = None,
     weights: Sequence[float] | None = None,
-    feature_names: Sequence[str],
+    feature_names: Sequence[str] | None = None,
     expected_user_ids: Sequence[Any] | None = None,
     bundle: Any = None,
 ) -> InferenceResult:
@@ -121,6 +121,20 @@ def predict_ensemble(
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         raise ValueError("frame must be a non-empty DataFrame")
     bundle_values = _bundle_values(bundle)
+    if bundle_values:
+        manifest = bundle_values.get("manifest")
+        if manifest is None or getattr(manifest, "version", None) != 1:
+            raise ValueError("inference requires a validated version-1 bundle")
+        if classifiers is None:
+            classifiers = bundle_values.get("classifiers")
+        if positive_regressor is None:
+            positive_regressor = bundle_values.get("positive_regressor")
+        if calibrator is None:
+            calibrator = bundle_values.get("calibrator")
+        if feature_names is None:
+            feature_names = bundle_values.get("feature_names")
+    if classifiers is None or positive_regressor is None or feature_names is None:
+        raise ValueError("classifiers, positive_regressor, and feature_names or a validated bundle are required")
     if bundle_values:
         if bundle_values.get("feature_names") is not None and tuple(feature_names) != tuple(bundle_values["feature_names"]):
             raise ValueError("feature names do not match validated bundle")
@@ -133,6 +147,8 @@ def predict_ensemble(
         if weights is None:
             weights = bundle_values.get("weights")
     names = tuple(feature_names)
+    if len(names) != 91 or len(set(names)) != 91:
+        raise ValueError("inference requires exactly 91 unique ordered feature names")
     missing = [name for name in names if name not in frame.columns]
     if missing:
         raise ValueError(f"Missing feature columns: {missing}")

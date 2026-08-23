@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from src.artifacts import (
+    ArtifactBundle,
     ArtifactManifest,
     CheckpointMismatchError,
     build_manifest,
@@ -11,8 +12,28 @@ from src.artifacts import (
     save_checkpoint,
     save_manifest,
     save_model,
+    sha256_json,
     validate_manifest,
 )
+
+
+class BundleClassifier:
+    def predict_proba(self, X):
+        import numpy as np
+        return np.column_stack([np.full(len(X), .75), np.full(len(X), .25)])
+
+
+class BundleRegressor:
+    def predict(self, X):
+        import numpy as np
+        return np.full(len(X), 2.0)
+
+
+class BundleCalibrator:
+    def predict_proba(self, p):
+        import numpy as np
+        p = np.asarray(p)
+        return np.column_stack([1 - p, p])
 
 
 class ArtifactTests(unittest.TestCase):
@@ -59,3 +80,26 @@ class ArtifactTests(unittest.TestCase):
             path = Path(temp_dir) / "classifier.txt"
             save_model(path, Wrapper())
             self.assertEqual(path.read_bytes(), b"native-booster")
+
+    def test_bundle_save_load_persists_all_components_and_provenance(self):
+        names = tuple(f"feature_{i}" for i in range(91))
+        manifest = build_manifest(config_sha256="config", feature_sha256=sha256_json(list(names)),
+                                  data_sha256="data", trained_through="2025-12-15",
+                                  model_names=("classifier",), weights=(1.0,),
+                                  blend_history=({"fold": "outer_1"},),
+                                  pre_january_config={"phase": "pre"}, post_january_config={"phase": "post"})
+        bundle = ArtifactBundle(manifest, names, (BundleClassifier(),), BundleRegressor(), BundleCalibrator())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bundle"
+            from src.artifacts import load_bundle, save_bundle
+            save_bundle(path, bundle)
+            loaded = load_bundle(path, expected_config_sha256="config",
+                                 expected_feature_sha256=sha256_json(list(names)), expected_data_sha256="data")
+            self.assertEqual(loaded.feature_names, names)
+            self.assertEqual(len(loaded.classifiers), 1)
+            self.assertIsNotNone(loaded.positive_regressor)
+            self.assertIsNotNone(loaded.calibrator)
+            self.assertEqual(loaded.manifest.blend_history[0]["fold"], "outer_1")
+            with self.assertRaises(CheckpointMismatchError):
+                load_bundle(path, expected_config_sha256="wrong",
+                            expected_feature_sha256=sha256_json(list(names)), expected_data_sha256="data")

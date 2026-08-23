@@ -134,7 +134,7 @@ class ModelContractTests(unittest.TestCase):
         class EBM:
             fits = []
             def __init__(self, **kwargs): self.kwargs = kwargs; self.best_iteration_ = 3
-            def estimate_mem(self, data_multiplier=1): return 500
+            def estimate_mem(self, X, y, data_multiplier=1): return 500
             def fit(self, X, y, **kwargs): self.fits.append((X, y, kwargs)); return self
             def predict_proba(self, X): return np.column_stack([np.full(len(X), .5), np.full(len(X), .5)])
         rejected = fit_ebm_classifier(frame, [0, 1] * 4, fold, estimator_factory=EBM,
@@ -144,3 +144,19 @@ class ModelContractTests(unittest.TestCase):
                                       available_memory=1000, measured_overhead=100)
         self.assertIsInstance(accepted, FittedFoldModel)
         self.assertTrue(EBM.fits[0][2]["bags"].tolist().count(-1) > 0)
+
+    def test_ebm_default_overhead_measurement_and_array_rounds_are_safe(self):
+        dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
+        frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},
+                             index=pd.DatetimeIndex(dates.repeat(2), name="cutoff_date"))
+        fold = build_nested_folds(dates, [pd.Timestamp("2025-07-18")])[0]
+        class EBM:
+            def __init__(self, **kwargs): self.best_iteration_ = np.array([[2, 4], [3, 5]])
+            def estimate_mem(self, X, y, data_multiplier=1): return 1
+            def fit(self, X, y, **kwargs): return self
+            def predict_proba(self, X): return np.column_stack([np.full(len(X), .5), np.full(len(X), .5)])
+        accepted = fit_ebm_classifier(frame, [0, 1] * 4, fold, estimator_factory=EBM,
+                                      available_memory=1_000_000)
+        self.assertIsInstance(accepted, FittedFoldModel)
+        self.assertEqual(accepted.best_iteration, 5)
+        self.assertGreaterEqual(accepted.metadata["measured_overhead"], 0)

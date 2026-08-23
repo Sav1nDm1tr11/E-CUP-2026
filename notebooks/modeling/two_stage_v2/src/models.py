@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import importlib
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
@@ -367,19 +368,33 @@ def fit_catboost_classifier(
     candidates = list(ParameterSampler(candidate_space, n_iter=n_trials, random_state=random_seed))
     if not candidates:
         raise ValueError("ParameterSampler produced no CatBoost candidates")
+    base.setdefault("loss_function", "Logloss")
+    base.setdefault("eval_metric", "Logloss")
+    base.setdefault("bootstrap_type", "Bayesian")
+    base.setdefault("depth", 6)
+    base.setdefault("learning_rate", 0.05)
     best_score = float("inf")
     best_candidate: dict[str, Any] = {}
     best_iteration = int(base["iterations"])
     objective_actual = actual_gmv_30d if actual_gmv_30d is not None else actual_gmv
     positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)
     actual = None if objective_actual is None else np.asarray(objective_actual, dtype=float)
-    if (positive is None) != (actual is None):
-        raise ValueError("inner_positive_log and actual_gmv must be supplied together")
+    if positive is None or actual is None:
+        raise ValueError("CatBoost requires inner_positive_log and actual_gmv for end-to-end objective")
     if positive is not None and not (
         len(positive) == len(X) == len(actual)
         or len(positive) == int(inner_valid.sum()) == len(actual)
     ):
         raise ValueError("inner objective arrays must match X or inner validation rows")
+    process = None
+    try:
+        import psutil
+        process = psutil.Process()
+        peak_memory = int(process.memory_info().rss)
+    except ImportError:
+        peak_memory = 0
+        if ordered:
+            return ResourceRejection("ordered_memory_measurement_unavailable", 0, 0, 0, 0)
     started = time.perf_counter()
     for candidate in candidates:
         trial_params = dict(base, **candidate)
@@ -393,19 +408,17 @@ def fit_catboost_classifier(
             # inner eval_set remains mandatory.
             trial.fit(_slice(model_X, inner_train), _slice(y, inner_train), eval_set=fit_kwargs["eval_set"])
         valid_probability = _positive_proba(trial, _slice(model_X, inner_valid))
-        if positive is None:
-            score = float(log_loss(_slice(y, inner_valid), valid_probability, labels=[0, 1]))
-            objective_name = "inner_logloss"
+        if process is not None:
+            peak_memory = max(peak_memory, int(process.memory_info().rss))
+        if len(positive) == len(X):
+            valid_actual = actual[inner_valid]
+            valid_log = positive[inner_valid]
         else:
-            if len(positive) == len(X):
-                valid_actual = actual[inner_valid]
-                valid_log = positive[inner_valid]
-            else:
-                valid_actual = actual
-                valid_log = positive
-            prediction = np.expm1(valid_probability * np.maximum(valid_log, 0.0))
-            score = float(rmsle(valid_actual, prediction))
-            objective_name = "inner_end_to_end_rmsle"
+            valid_actual = actual
+            valid_log = positive
+        prediction = np.expm1(valid_probability * np.maximum(valid_log, 0.0))
+        score = float(rmsle(valid_actual, prediction))
+        objective_name = "inner_end_to_end_rmsle"
         if score < best_score:
             best_score = score
             best_candidate = dict(candidate)
@@ -415,7 +428,10 @@ def fit_catboost_classifier(
         "ordered": bool(ordered), "selected_score": best_score,
         "objective": objective_name, "trials": len(candidates),
         "fit_seconds": float(time.perf_counter() - started),
+        "peak_memory_bytes": peak_memory,
     }
+    if ordered and plain_metrics is None:
+        return ResourceRejection("ordered_governance_metrics_unavailable", 0, 0, 0, 0)
     if plain_metrics:
         governance.update({f"plain_{key}": value for key, value in plain_metrics.items()})
         if ordered and "rmsle" in plain_metrics:
@@ -423,7 +439,7 @@ def fit_catboost_classifier(
             governance["improvement"] = improvement
             plain_seconds = float(plain_metrics.get("fit_seconds", np.inf))
             plain_memory = float(plain_metrics.get("memory_bytes", plain_metrics.get("plain_memory_bytes", np.inf)))
-            current_memory = float(governance.get("memory_bytes", 0))
+            current_memory = float(governance.get("memory_bytes", governance.get("peak_memory_bytes", 0)))
             if improvement < minimum_ordered_improvement and (
                 governance["fit_seconds"] > 3 * plain_seconds
                 or current_memory > 3 * plain_memory
@@ -453,6 +469,55 @@ def estimate_ebm_memory(data: Any, *, data_multiplier: float = 1.0) -> int:
     return int(np.ceil(np.asarray(data).nbytes * float(data_multiplier) * 4.0))
 
 
+def _measure_ebm_toy_overhead(
+    estimator_factory: Callable[..., Any],
+    params: Mapping[str, Any],
+    X: pd.DataFrame,
+    y: Sequence,
+    bags: np.ndarray,
+) -> int | None:
+    """Measure peak RSS increase for a same-settings, bounded toy fit."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    process = psutil.Process()
+    rows = min(len(X), 256)
+    toy_X, toy_y, toy_bags = X.iloc[:rows], np.asarray(y)[:rows], bags[:rows]
+    try:
+        toy = estimator_factory(**dict(params))
+    except Exception:
+        return None
+    baseline = int(process.memory_info().rss)
+    peak = baseline
+    stop = threading.Event()
+
+    def sample() -> None:
+        nonlocal peak
+        while not stop.wait(0.01):
+            try:
+                peak = max(peak, int(process.memory_info().rss))
+            except Exception:
+                return
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    try:
+        toy.fit(toy_X, toy_y, bags=toy_bags)
+    except Exception:
+        stop.set()
+        sampler.join(timeout=1)
+        return None
+    stop.set()
+    sampler.join(timeout=1)
+    try:
+        peak = max(peak, int(process.memory_info().rss))
+    except Exception:
+        return None
+    overhead = peak - baseline
+    return int(overhead) if overhead >= 0 else None
+
+
 def fit_ebm_classifier(
     X: pd.DataFrame,
     y: Sequence,
@@ -472,6 +537,7 @@ def fit_ebm_classifier(
     early_stopping_rounds: int | None = None,
     max_configurations: int = 12,
     pilot_wall_clock_seconds: int = 5400,
+    candidate_configs: Sequence[Mapping[str, Any]] | None = None,
 ) -> FittedFoldModel | ResourceRejection:
     """Fit InterpretML EBM only after the exact 70% RAM gate passes.
 
@@ -485,9 +551,35 @@ def fit_ebm_classifier(
             available = int(psutil.virtual_memory().available)
         except ImportError:
             available = 0
+    fraction = float(getattr(config, "resource_gate_fraction", 0.70))
+    if candidate_configs is not None:
+        candidates = list(candidate_configs)[:min(12, max(1, int(max_configurations)))]
+        if not candidates:
+            return ResourceRejection("ebm_no_candidates", 0, 0, available, int(available * fraction))
+        if len(candidates) > 1:
+            started_search = time.perf_counter()
+            last_rejection: ResourceRejection | None = None
+            for candidate in candidates:
+                if time.perf_counter() - started_search > pilot_wall_clock_seconds:
+                    break
+                outcome = fit_ebm_classifier(
+                    X, y, fold, params=candidate, config=config,
+                    estimator_factory=estimator_factory, available_memory=available,
+                    memory_estimator=memory_estimator, measured_overhead=measured_overhead,
+                    overhead_estimator=overhead_estimator, max_rounds=max_rounds, groups=groups,
+                    inner_bags=inner_bags, n_jobs=n_jobs, early_stopping_rounds=early_stopping_rounds,
+                    max_configurations=1, pilot_wall_clock_seconds=pilot_wall_clock_seconds,
+                    candidate_configs=None,
+                )
+                if isinstance(outcome, FittedFoldModel):
+                    outcome.metadata["candidate_count"] = len(candidates)
+                    outcome.metadata["candidate_configs_capped"] = len(candidates) <= 12
+                    outcome.metadata["pilot_wall_clock_seconds"] = pilot_wall_clock_seconds
+                    return outcome
+                last_rejection = outcome
+            return last_rejection or ResourceRejection("ebm_pilot_timeout", 0, 0, available, int(available * fraction))
     estimate_fn = memory_estimator or estimate_ebm_memory
     estimated = int(estimate_fn(X, data_multiplier=1))
-    fraction = float(getattr(config, "resource_gate_fraction", 0.70))
     # Lazy optional dependency boundary.
     if estimator_factory is None:
         module = importlib.import_module("interpret.glassbox")
@@ -498,12 +590,12 @@ def fit_ebm_classifier(
     inner_valid = np.asarray(dates == fold.inner_valid_date, dtype=bool)
     inner_train = outer_train & ~inner_valid
     base = dict(params or {})
-    base.setdefault("inner_bags", inner_bags if inner_bags is not None else int(getattr(config, "ebm_inner_bags", 8)))
+    base.setdefault("inner_bags", inner_bags if inner_bags is not None else int(getattr(config, "ebm_inner_bags", 0)))
     base.setdefault("n_jobs", min(10, int(n_jobs if n_jobs is not None else getattr(config, "estimator_threads", 10))))
     base.setdefault("max_rounds", max_rounds)
-    base.setdefault("outer_bags", int(base.get("inner_bags", 8)))
+    base.setdefault("outer_bags", 8)
     base.setdefault("validation_size", 0)
-    base.setdefault("early_stopping_rounds", early_stopping_rounds if early_stopping_rounds is not None else 1000)
+    base.setdefault("early_stopping_rounds", early_stopping_rounds if early_stopping_rounds is not None else 100)
     base.setdefault("random_state", 42)
     if base["n_jobs"] > 10:
         base["n_jobs"] = 10
@@ -522,11 +614,18 @@ def fit_ebm_classifier(
         except TypeError:
             overhead = int(overhead_fn(model_X, bags_outer, base["n_jobs"]))
     else:
-        overhead = 0
+        overhead = _measure_ebm_toy_overhead(estimator_factory, base, model_X.iloc[outer_train],
+                                              _slice(y, outer_train), bags_outer)
+        if overhead is None:
+            return ResourceRejection("ebm_overhead_measurement_unavailable", estimated, 0, available,
+                                     int(available * fraction))
+    if overhead < 0:
+        return ResourceRejection("ebm_overhead_measurement_invalid", estimated, overhead, available,
+                                 int(available * fraction))
     native_estimator = getattr(probe, "estimate_mem", None)
     if native_estimator is not None and memory_estimator is None:
         try:
-            estimated = int(native_estimator(data_multiplier=1))
+            estimated = int(native_estimator(model_X.iloc[outer_train], _slice(y, outer_train), data_multiplier=1))
         except TypeError as exc:
             return ResourceRejection("ebm_estimate_mem_signature_rejected", estimated, overhead, available,
                                      int(available * fraction))
@@ -538,7 +637,10 @@ def fit_ebm_classifier(
         inner.fit(_slice(model_X, outer_train), _slice(y, outer_train), bags=bags_outer)
     except TypeError as exc:
         return ResourceRejection("ebm_temporal_bags_rejected", estimated, overhead, available, limit)
-    chosen_rounds = int(getattr(inner, "best_iteration_", getattr(inner, "max_rounds", max_rounds)))
+    raw_rounds = getattr(inner, "best_iteration_", getattr(inner, "max_rounds", max_rounds))
+    rounds_array = np.asarray(raw_rounds)
+    positive_rounds = rounds_array[np.isfinite(rounds_array) & (rounds_array > 0)] if rounds_array.ndim else rounds_array
+    chosen_rounds = int(np.max(positive_rounds)) if np.size(positive_rounds) else int(max_rounds)
     chosen_rounds = max(1, chosen_rounds)
     refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1,
                         early_stopping_rounds=0)
@@ -551,4 +653,5 @@ def fit_ebm_classifier(
                                      "inner_bags": base["inner_bags"], "n_jobs": base["n_jobs"],
                                      "max_configurations": min(12, max_configurations),
                                      "pilot_wall_clock_seconds": pilot_wall_clock_seconds,
-                                     "temporal_bags": True})
+                                     "temporal_bags": True,
+                                     "selected_rounds_aggregation": "max_positive_stage_bag"})
