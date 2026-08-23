@@ -144,6 +144,21 @@ class ModelContractTests(unittest.TestCase):
                                                         "peak_memory_bytes": 10_000}, **kwargs)
         self.assertIsInstance(result, FittedFoldModel)
 
+    def test_catboost_report_prediction_restores_original_outer_row_order(self):
+        class Keyed(RecordingEstimator):
+            def predict_proba(self, X):
+                p = np.asarray(X["feature_0"], dtype=float) / 10.0
+                return np.column_stack([1 - p, p])
+        dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
+        frame = pd.DataFrame({"user_id": ["z", "a", "z", "a", "z", "a", "z", "a"],
+                              "feature_0": [1., 2., 3., 4., 5., 6., 9., 8.]},
+                             index=pd.DatetimeIndex(dates.repeat(2), name="cutoff_date"))
+        fold = build_nested_folds(dates, [pd.Timestamp("2025-07-18")])[0]
+        result = fit_catboost_classifier(frame, [0, 1] * 4, fold, estimator_factory=Keyed,
+                                         param_distributions={"depth": [6]}, trials=1,
+                                         inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
+        np.testing.assert_allclose(result.report_prediction, [0.9, 0.8])
+
     def test_ebm_memory_gate_and_temporal_bags_are_structured(self):
         dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
         frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},

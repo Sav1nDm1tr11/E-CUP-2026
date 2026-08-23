@@ -344,6 +344,13 @@ def fit_catboost_classifier(
     from sklearn.metrics import log_loss
     from scipy.stats import loguniform, uniform
 
+    raw_positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)
+    raw_actual = None if (actual_gmv_30d if actual_gmv_30d is not None else actual_gmv) is None else np.asarray(
+        actual_gmv_30d if actual_gmv_30d is not None else actual_gmv, dtype=float
+    )
+    if raw_positive is None or raw_actual is None or len(raw_positive) != len(X) or len(raw_actual) != len(X):
+        raise ValueError("CatBoost objective arrays must be supplied at full X length")
+
     dates = _dates(X, groups)
     order_frame = pd.DataFrame({"_cutoff": dates, "_position": np.arange(len(X))})
     if "user_id" in X.columns:
@@ -392,15 +399,8 @@ def fit_catboost_classifier(
     best_candidate: dict[str, Any] = {}
     best_iteration = int(base["iterations"])
     objective_actual = actual_gmv_30d if actual_gmv_30d is not None else actual_gmv
-    positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)[order]
-    actual = None if objective_actual is None else np.asarray(objective_actual, dtype=float)[order]
-    if positive is None or actual is None:
-        raise ValueError("CatBoost requires inner_positive_log and actual_gmv for end-to-end objective")
-    if positive is not None and not (
-        len(positive) == len(X) == len(actual)
-        or len(positive) == int(inner_valid.sum()) == len(actual)
-    ):
-        raise ValueError("inner objective arrays must match X or inner validation rows")
+    positive = raw_positive[order]
+    actual = raw_actual[order]
     process = None
     try:
         import psutil
@@ -425,12 +425,8 @@ def fit_catboost_classifier(
         valid_probability = _positive_proba(trial, _slice(model_X, inner_valid))
         if process is not None:
             peak_memory = max(peak_memory, int(process.memory_info().rss))
-        if len(positive) == len(X):
             valid_actual = actual[inner_valid]
             valid_log = positive[inner_valid]
-        else:
-            valid_actual = actual
-            valid_log = positive
         prediction = np.expm1(valid_probability * np.maximum(valid_log, 0.0))
         score = float(rmsle(valid_actual, prediction))
         objective_name = "inner_end_to_end_rmsle"
@@ -473,7 +469,9 @@ def fit_catboost_classifier(
     refit_params = dict(base, **best_candidate, iterations=best_iteration, use_best_model=False)
     refit = factory(**refit_params)
     refit.fit(_slice(model_X, outer_train), _slice(y, outer_train))
-    report = _positive_proba(refit, _slice(model_X, outer_report)) if outer_report.any() else np.empty(0, dtype=float)
+    sorted_report = _positive_proba(refit, _slice(model_X, outer_report)) if outer_report.any() else np.empty(0, dtype=float)
+    report_order = np.argsort(order[outer_report], kind="stable") if outer_report.any() else np.empty(0, dtype=int)
+    report = sorted_report[report_order]
     return FittedFoldModel(refit, best_iteration, float(time.perf_counter() - started),
                            "catboost_classifier_ordered" if ordered else "catboost_classifier",
                            fold.name, report, metadata={"trials": len(candidates), "selection_score": best_score,
@@ -602,12 +600,11 @@ def fit_ebm_classifier(
             params = dict(candidates[0])
             candidate_configs = None
         if len(candidates) > 1:
-            started_search = time.perf_counter()
             last_rejection: ResourceRejection | None = None
             best: tuple[float, Mapping[str, Any]] | None = None
+            evaluated_count = 0
             for candidate in candidates:
-                if time.perf_counter() - started_search > pilot_wall_clock_seconds:
-                    break
+                evaluated_count += 1
                 outcome = fit_ebm_classifier(
                     X, y, fold, params=candidate, config=config,
                     estimator_factory=estimator_factory, available_memory=available,
@@ -634,7 +631,7 @@ def fit_ebm_classifier(
                 candidate_configs=None, inner_positive_log=positive, actual_gmv=actual,
             )
             if isinstance(winner, FittedFoldModel):
-                winner.metadata.update({"candidate_count": len(candidates), "candidate_configs_capped": len(candidates) <= 12,
+                winner.metadata.update({"candidate_count": evaluated_count, "candidate_configs_capped": len(candidates) <= 12,
                                         "pilot_wall_clock_seconds": pilot_wall_clock_seconds,
                                         "selected_params": dict(best[1])})
             return winner
@@ -660,7 +657,8 @@ def fit_ebm_classifier(
     start_time = time.perf_counter()
     deadline = start_time + float(pilot_wall_clock_seconds)
     def callback(bag_index, boosting_steps, made_progress, best_score):
-        return time.perf_counter() < deadline
+        # InterpretML expects True to stop training.
+        return time.perf_counter() >= deadline
     base.setdefault("callback", callback)
     if base["n_jobs"] > 10:
         base["n_jobs"] = 10
@@ -716,6 +714,7 @@ def fit_ebm_classifier(
                                fold.name, np.empty(0, dtype=float), metadata={"inner_score": inner_score})
     refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1,
                         early_stopping_rounds=0)
+    refit_params.pop("callback", None)
     refit = estimator_factory(**refit_params)
     refit.fit(_slice(model_X, outer_train), _slice(y, outer_train))
     report = _positive_proba(refit, _slice(model_X, dates == fold.outer_valid_date))

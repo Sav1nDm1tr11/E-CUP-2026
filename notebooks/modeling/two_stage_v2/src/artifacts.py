@@ -8,6 +8,7 @@ import pickle
 import tempfile
 import hashlib
 import importlib.metadata
+import datetime as _datetime
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -127,6 +128,21 @@ def validate_manifest(
 ) -> None:
     if manifest.version != 1 or not manifest.config_sha256 or not manifest.feature_sha256 or not manifest.data_sha256:
         raise CheckpointMismatchError("Manifest is missing required provenance hashes")
+    try:
+        trained = _datetime.datetime.fromisoformat(manifest.trained_through.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise CheckpointMismatchError("Manifest trained_through must be a valid timestamp") from exc
+    if trained is None or not manifest.package_versions or not isinstance(manifest.blend_history, tuple) or not manifest.blend_history:
+        raise CheckpointMismatchError("Manifest is missing required history/package provenance")
+    required_packages = {"numpy", "pandas", "scikit-learn"}
+    if not required_packages.issubset(manifest.package_versions):
+        raise CheckpointMismatchError("Manifest package_versions must include core libraries")
+    if not isinstance(manifest.pre_january_config, Mapping) or not manifest.pre_january_config:
+        raise CheckpointMismatchError("Manifest pre_january_config is required")
+    if not isinstance(manifest.post_january_config, Mapping) or not manifest.post_january_config:
+        raise CheckpointMismatchError("Manifest post_january_config is required")
+    if not manifest.data_path or manifest.data_size is None or int(manifest.data_size) < 0 or manifest.data_mtime_ns is None or int(manifest.data_mtime_ns) <= 0:
+        raise CheckpointMismatchError("Manifest data path/size/mtime provenance is required")
     for label, expected, actual in (("config", config_sha256, manifest.config_sha256),
                                     ("feature", feature_sha256, manifest.feature_sha256),
                                     ("data", data_sha256, manifest.data_sha256)):
