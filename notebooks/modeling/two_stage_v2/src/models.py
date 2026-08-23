@@ -17,6 +17,17 @@ import numpy as np
 import pandas as pd
 
 from .temporal_split import CutoffFold
+from .metrics import rmsle
+
+
+_RESERVED_COLUMNS = frozenset({
+    "user_id", "cutoff_date", "target_nonzero", "target_gmv_30d",
+    "prediction", "sample_weight", "fold", "group", "row_id",
+})
+
+
+class ModelFitRejection(RuntimeError):
+    """Raised when an estimator cannot honor the temporal fit contract."""
 
 
 @dataclass
@@ -59,8 +70,24 @@ class ResourceRejection:
     def available_bytes(self) -> int:
         return self.available_memory
 
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "reason": self.reason,
+            "estimated_model_memory": self.estimated_model_memory,
+            "measured_overhead": self.measured_overhead,
+            "available_memory": self.available_memory,
+            "gate_limit": self.gate_limit,
+            "accepted": self.accepted,
+        }
 
-def _dates(frame: Any) -> pd.DatetimeIndex:
+
+def _dates(frame: Any, groups: Sequence[Any] | None = None) -> pd.DatetimeIndex:
+    if groups is not None:
+        dates = pd.DatetimeIndex(pd.to_datetime(np.asarray(groups)))
+        if len(dates) != len(frame):
+            raise ValueError("groups must have one cutoff date per row")
+        return dates
     if isinstance(frame, pd.DataFrame) and "cutoff_date" in frame.columns:
         return pd.DatetimeIndex(pd.to_datetime(frame["cutoff_date"]))
     index = getattr(frame, "index", None)
@@ -69,6 +96,12 @@ def _dates(frame: Any) -> pd.DatetimeIndex:
     if isinstance(index, pd.DatetimeIndex):
         return index
     raise ValueError("X must have a cutoff_date column or DatetimeIndex")
+
+
+def _feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Remove IDs/temporal labels before passing a matrix to an estimator."""
+    columns = [column for column in frame.columns if column not in _RESERVED_COLUMNS]
+    return frame.loc[:, columns]
 
 
 def _mask(frame: Any, date_values: Sequence[pd.Timestamp]) -> np.ndarray:
@@ -130,7 +163,10 @@ def _positive_proba(estimator: Any, X: Any) -> np.ndarray:
             values = values[:, -1]
     else:
         values = np.asarray(estimator.predict(X), dtype=float).reshape(-1)
-    return np.clip(values.reshape(-1), 0.0, 1.0)
+    values = values.reshape(-1)
+    if not np.isfinite(values).all() or (values < 0).any() or (values > 1).any():
+        raise ValueError("estimator returned probabilities outside [0, 1]")
+    return values
 
 
 def _fit_with_optional_callbacks(estimator: Any, X: Any, y: Any, *, eval_set=None, callbacks=None, **kwargs):
@@ -141,15 +177,18 @@ def _fit_with_optional_callbacks(estimator: Any, X: Any, y: Any, *, eval_set=Non
         fit_kwargs["callbacks"] = callbacks
     try:
         return estimator.fit(X, y, **fit_kwargs)
-    except TypeError:
-        # Recording/test estimators and older sklearn wrappers may not expose
-        # callbacks; eval_set still preserves the temporal contract.
+    except TypeError as callback_error:
+        if "callbacks" not in fit_kwargs:
+            raise ModelFitRejection("LightGBM estimator rejected required eval_set") from callback_error
+        # Compatibility retry is allowed only for the callbacks argument;
+        # eval_set is never removed because that would leak report labels.
         fit_kwargs.pop("callbacks", None)
         try:
             return estimator.fit(X, y, **fit_kwargs)
-        except TypeError:
-            fit_kwargs.pop("eval_set", None)
-            return estimator.fit(X, y, **fit_kwargs)
+        except TypeError as eval_error:
+            raise ModelFitRejection(
+                "LightGBM estimator cannot fit with required inner eval_set"
+            ) from eval_error
 
 
 def _lgbm_callbacks(rounds: int):
@@ -170,12 +209,14 @@ def _two_phase_lgbm(
     model_name: str,
     default_n_estimators: int,
     early_stopping_rounds: int,
+    groups: Sequence[Any] | None = None,
     transform_y: Callable[[Any], np.ndarray] | None = None,
     positive_mask: np.ndarray | None = None,
 ) -> FittedFoldModel:
     if not isinstance(X, pd.DataFrame) or len(X) != len(y):
         raise ValueError("X and y must be equally sized")
-    dates = _dates(X)
+    dates = _dates(X, groups)
+    model_X = _feature_frame(X)
     outer_train = np.asarray(dates.isin(pd.DatetimeIndex(fold.train_dates)), dtype=bool)
     inner_valid = np.asarray(dates == pd.Timestamp(fold.inner_valid_date), dtype=bool)
     inner_train = outer_train & ~inner_valid
@@ -190,6 +231,10 @@ def _two_phase_lgbm(
         inner_train &= positive_mask
         inner_valid &= positive_mask
         outer_train &= positive_mask
+        if not inner_train.any() or not inner_valid.any() or not outer_train.any():
+            raise ValueError(
+                f"Fold {fold.name} has no positive rows in inner train, inner validation, or outer train"
+            )
     y_values = transform_y(y_values) if transform_y is not None else y_values
     factory = estimator_factory or _factory_default(model_name)
     base = dict(params or {})
@@ -201,9 +246,9 @@ def _two_phase_lgbm(
     callbacks = _lgbm_callbacks(early_stopping_rounds)
     _fit_with_optional_callbacks(
         inner_estimator,
-        _slice(X, inner_train),
+        _slice(model_X, inner_train),
         _slice(y_values, inner_train),
-        eval_set=[(_slice(X, inner_valid), _slice(y_values, inner_valid))],
+        eval_set=[(_slice(model_X, inner_valid), _slice(y_values, inner_valid))],
         callbacks=callbacks,
     )
     best_iteration = _positive_iteration(inner_estimator, base["n_estimators"])
@@ -212,13 +257,13 @@ def _two_phase_lgbm(
     refit_estimator = factory(**refit_params)
     # Deliberately no eval_set: outer report labels are never used by fit or
     # iteration selection.
-    refit_estimator.fit(_slice(X, outer_train), _slice(y_values, outer_train))
+    refit_estimator.fit(_slice(model_X, outer_train), _slice(y_values, outer_train))
     if not outer_report.any():
         report_prediction = np.empty(0, dtype=float)
     elif model_name.endswith("classifier"):
-        report_prediction = _positive_proba(refit_estimator, _slice(X, outer_report))
+        report_prediction = _positive_proba(refit_estimator, _slice(model_X, outer_report))
     else:
-        report_prediction = np.asarray(refit_estimator.predict(_slice(X, outer_report)), dtype=float).reshape(-1)
+        report_prediction = np.asarray(refit_estimator.predict(_slice(model_X, outer_report)), dtype=float).reshape(-1)
     elapsed = time.perf_counter() - started
     del inner_estimator
     gc.collect()
@@ -234,16 +279,18 @@ def fit_lgbm_classifier(
     estimator_factory: Callable[..., Any] | None = None,
     params: Mapping[str, Any] | None = None,
     config: Any = None,
-    early_stopping_rounds: int = 100,
+    early_stopping_rounds: int = 150,
     max_estimators: int | None = None,
+    groups: Sequence[Any] | None = None,
 ) -> FittedFoldModel:
     chosen = dict(params or {})
     if not chosen:
         chosen = _params(config, "frozen_classifier_params")
-    default = max_estimators or int(getattr(config, "frozen_classifier_n_estimators", 1000))
+    default = max_estimators or int(getattr(config, "lgbm_classifier_max_estimators", 5000))
     return _two_phase_lgbm(X, y, fold=fold, estimator_factory=estimator_factory,
                            params=chosen, model_name="lgbm_classifier",
-                           default_n_estimators=default, early_stopping_rounds=early_stopping_rounds)
+                           default_n_estimators=default, early_stopping_rounds=early_stopping_rounds,
+                           groups=groups)
 
 
 def fit_positive_lgbm_regressor(
@@ -254,17 +301,19 @@ def fit_positive_lgbm_regressor(
     estimator_factory: Callable[..., Any] | None = None,
     params: Mapping[str, Any] | None = None,
     config: Any = None,
-    early_stopping_rounds: int = 100,
+    early_stopping_rounds: int = 150,
     max_estimators: int | None = None,
+    groups: Sequence[Any] | None = None,
 ) -> FittedFoldModel:
     target = np.asarray(target_gmv_30d, dtype=float)
     if len(target) != len(X) or not np.isfinite(target).all() or (target < 0).any():
         raise ValueError("target_gmv_30d must be finite, non-negative, and match X")
     chosen = dict(params or {}) or _params(config, "frozen_regressor_params")
-    default = max_estimators or int(getattr(config, "frozen_regressor_n_estimators", 1000))
+    default = max_estimators or int(getattr(config, "lgbm_regressor_max_estimators", 5000))
     return _two_phase_lgbm(X, target, fold=fold, estimator_factory=estimator_factory,
                            params=chosen, model_name="lgbm_regressor",
                            default_n_estimators=default, early_stopping_rounds=early_stopping_rounds,
+                           groups=groups,
                            transform_y=lambda values: np.log1p(np.asarray(values, dtype=float)),
                            positive_mask=target > 0)
 
@@ -281,12 +330,20 @@ def fit_catboost_classifier(
     trials: int | None = None,
     ordered: bool = False,
     random_seed: int = 42,
-) -> FittedFoldModel:
+    groups: Sequence[Any] | None = None,
+    inner_positive_log: Sequence[float] | None = None,
+    actual_gmv: Sequence[float] | None = None,
+    actual_gmv_30d: Sequence[float] | None = None,
+    governance_hook: Callable[[Mapping[str, Any]], ResourceRejection | None] | None = None,
+    plain_metrics: Mapping[str, float] | None = None,
+    minimum_ordered_improvement: float = 0.0005,
+) -> FittedFoldModel | ResourceRejection:
     """Search CatBoost candidates sequentially, then perform a fresh refit."""
     from sklearn.model_selection import ParameterSampler
     from sklearn.metrics import log_loss
 
-    dates = _dates(X)
+    dates = _dates(X, groups)
+    model_X = _feature_frame(X)
     outer_train = np.asarray(dates.isin(fold.train_dates), dtype=bool)
     inner_valid = np.asarray(dates == fold.inner_valid_date, dtype=bool)
     inner_train = outer_train & ~inner_valid
@@ -302,32 +359,90 @@ def fit_catboost_classifier(
     base.setdefault("iterations", int(getattr(config, "catboost_max_iterations", 5000)))
     # Keep candidate generation behind ParameterSampler even for the small
     # default search; this makes trial ordering and the random seed auditable.
-    candidate_space = dict(param_distributions or {"depth": [6], "learning_rate": [0.05]})
-    n_trials = max(1, int(trials if trials is not None else getattr(config, "catboost_trials", 20)))
+    candidate_space = dict(param_distributions or {
+        "depth": [6, 7, 8, 9, 10], "learning_rate": [0.02, 0.03, 0.04, 0.05],
+    })
+    requested_trials = int(trials if trials is not None else getattr(config, "catboost_trials", 20))
+    n_trials = max(1, min(requested_trials, 3) if ordered else requested_trials)
     candidates = list(ParameterSampler(candidate_space, n_iter=n_trials, random_state=random_seed))
+    if not candidates:
+        raise ValueError("ParameterSampler produced no CatBoost candidates")
     best_score = float("inf")
+    best_candidate: dict[str, Any] = {}
     best_iteration = int(base["iterations"])
+    objective_actual = actual_gmv_30d if actual_gmv_30d is not None else actual_gmv
+    positive = None if inner_positive_log is None else np.asarray(inner_positive_log, dtype=float)
+    actual = None if objective_actual is None else np.asarray(objective_actual, dtype=float)
+    if (positive is None) != (actual is None):
+        raise ValueError("inner_positive_log and actual_gmv must be supplied together")
+    if positive is not None and not (
+        len(positive) == len(X) == len(actual)
+        or len(positive) == int(inner_valid.sum()) == len(actual)
+    ):
+        raise ValueError("inner objective arrays must match X or inner validation rows")
     started = time.perf_counter()
     for candidate in candidates:
         trial_params = dict(base, **candidate)
         trial = factory(**trial_params)
-        fit_kwargs = {"eval_set": [(_slice(X, inner_valid), _slice(y, inner_valid))],
+        fit_kwargs = {"eval_set": [(_slice(model_X, inner_valid), _slice(y, inner_valid))],
                       "early_stopping_rounds": int(getattr(config, "catboost_early_stopping_rounds", 150))}
         try:
-            trial.fit(_slice(X, inner_train), _slice(y, inner_train), **fit_kwargs)
+            trial.fit(_slice(model_X, inner_train), _slice(y, inner_train), **fit_kwargs)
         except TypeError:
-            trial.fit(_slice(X, inner_train), _slice(y, inner_train), eval_set=fit_kwargs["eval_set"])
-        score = log_loss(_slice(y, inner_valid), _positive_proba(trial, _slice(X, inner_valid)), labels=[0, 1])
+            # Compatibility retry may remove only early_stopping_rounds;
+            # inner eval_set remains mandatory.
+            trial.fit(_slice(model_X, inner_train), _slice(y, inner_train), eval_set=fit_kwargs["eval_set"])
+        valid_probability = _positive_proba(trial, _slice(model_X, inner_valid))
+        if positive is None:
+            score = float(log_loss(_slice(y, inner_valid), valid_probability, labels=[0, 1]))
+            objective_name = "inner_logloss"
+        else:
+            if len(positive) == len(X):
+                valid_actual = actual[inner_valid]
+                valid_log = positive[inner_valid]
+            else:
+                valid_actual = actual
+                valid_log = positive
+            prediction = np.expm1(valid_probability * np.maximum(valid_log, 0.0))
+            score = float(rmsle(valid_actual, prediction))
+            objective_name = "inner_end_to_end_rmsle"
         if score < best_score:
-            best_score, best_iteration = score, _positive_iteration(trial, trial_params["iterations"])
+            best_score = score
+            best_candidate = dict(candidate)
+            best_iteration = _positive_iteration(trial, trial_params["iterations"])
         del trial
-    refit_params = dict(base, iterations=best_iteration, use_best_model=False)
+    governance = {
+        "ordered": bool(ordered), "selected_score": best_score,
+        "objective": objective_name, "trials": len(candidates),
+        "fit_seconds": float(time.perf_counter() - started),
+    }
+    if plain_metrics:
+        governance.update({f"plain_{key}": value for key, value in plain_metrics.items()})
+        if ordered and "rmsle" in plain_metrics:
+            improvement = float(plain_metrics["rmsle"]) - best_score
+            governance["improvement"] = improvement
+            plain_seconds = float(plain_metrics.get("fit_seconds", np.inf))
+            plain_memory = float(plain_metrics.get("memory_bytes", plain_metrics.get("plain_memory_bytes", np.inf)))
+            current_memory = float(governance.get("memory_bytes", 0))
+            if improvement < minimum_ordered_improvement and (
+                governance["fit_seconds"] > 3 * plain_seconds
+                or current_memory > 3 * plain_memory
+            ):
+                return ResourceRejection("ordered_governance_rejected", 0, 0, 0, 0)
+    if governance_hook is not None:
+        rejection = governance_hook(governance)
+        if rejection is not None:
+            return rejection
+    refit_params = dict(base, **best_candidate, iterations=best_iteration, use_best_model=False)
     refit = factory(**refit_params)
-    refit.fit(_slice(X, outer_train), _slice(y, outer_train))
-    report = _positive_proba(refit, _slice(X, outer_report)) if outer_report.any() else np.empty(0, dtype=float)
+    refit.fit(_slice(model_X, outer_train), _slice(y, outer_train))
+    report = _positive_proba(refit, _slice(model_X, outer_report)) if outer_report.any() else np.empty(0, dtype=float)
     return FittedFoldModel(refit, best_iteration, float(time.perf_counter() - started),
                            "catboost_classifier_ordered" if ordered else "catboost_classifier",
-                           fold.name, report, metadata={"trials": len(candidates), "selection_logloss": best_score})
+                           fold.name, report, metadata={"trials": len(candidates), "selection_score": best_score,
+                                                         "objective": objective_name,
+                                                         "selected_params": best_candidate,
+                                                         "governance": governance})
 
 
 def estimate_ebm_memory(data: Any, *, data_multiplier: float = 1.0) -> int:
@@ -350,7 +465,13 @@ def fit_ebm_classifier(
     memory_estimator: Callable[..., int] | None = None,
     measured_overhead: int | None = None,
     overhead_estimator: Callable[..., int] | None = None,
-    max_rounds: int = 500,
+    max_rounds: int = 20_000,
+    groups: Sequence[Any] | None = None,
+    inner_bags: int | None = None,
+    n_jobs: int | None = None,
+    early_stopping_rounds: int | None = None,
+    max_configurations: int = 12,
+    pilot_wall_clock_seconds: int = 5400,
 ) -> FittedFoldModel | ResourceRejection:
     """Fit InterpretML EBM only after the exact 70% RAM gate passes.
 
@@ -366,38 +487,68 @@ def fit_ebm_classifier(
             available = 0
     estimate_fn = memory_estimator or estimate_ebm_memory
     estimated = int(estimate_fn(X, data_multiplier=1))
-    overhead_fn = overhead_estimator
-    overhead = int(measured_overhead if measured_overhead is not None else (overhead_fn(X) if overhead_fn else 0))
     fraction = float(getattr(config, "resource_gate_fraction", 0.70))
-    limit = int(available * fraction)
-    if estimated + overhead > limit:
-        return ResourceRejection("memory_gate_exceeded", estimated, overhead, available, limit)
     # Lazy optional dependency boundary.
     if estimator_factory is None:
         module = importlib.import_module("interpret.glassbox")
         estimator_factory = module.ExplainableBoostingClassifier
-    dates = _dates(X)
+    dates = _dates(X, groups)
+    model_X = _feature_frame(X)
     outer_train = np.asarray(dates.isin(fold.train_dates), dtype=bool)
     inner_valid = np.asarray(dates == fold.inner_valid_date, dtype=bool)
     inner_train = outer_train & ~inner_valid
     base = dict(params or {})
+    base.setdefault("inner_bags", inner_bags if inner_bags is not None else int(getattr(config, "ebm_inner_bags", 8)))
+    base.setdefault("n_jobs", min(10, int(n_jobs if n_jobs is not None else getattr(config, "estimator_threads", 10))))
     base.setdefault("max_rounds", max_rounds)
-    base.setdefault("outer_bags", 8)
-    base.setdefault("validation_size", 0.15)
+    base.setdefault("outer_bags", int(base.get("inner_bags", 8)))
+    base.setdefault("validation_size", 0)
+    base.setdefault("early_stopping_rounds", early_stopping_rounds if early_stopping_rounds is not None else 1000)
     base.setdefault("random_state", 42)
-    inner = estimator_factory(**base)
+    if base["n_jobs"] > 10:
+        base["n_jobs"] = 10
+    started = time.perf_counter()
+    probe = estimator_factory(**base)
     # InterpretML accepts integer bags: +1 train and -1 validation. This is
     # explicit and avoids its random temporal split.
     bags = np.where(inner_train, 1, np.where(inner_valid, -1, 0)).astype(np.int8)
+    bags_outer = bags[outer_train]
+    overhead_fn = overhead_estimator
+    if measured_overhead is not None:
+        overhead = int(measured_overhead)
+    elif overhead_fn is not None:
+        try:
+            overhead = int(overhead_fn(model_X, bags=bags_outer, n_jobs=base["n_jobs"]))
+        except TypeError:
+            overhead = int(overhead_fn(model_X, bags_outer, base["n_jobs"]))
+    else:
+        overhead = 0
+    native_estimator = getattr(probe, "estimate_mem", None)
+    if native_estimator is not None and memory_estimator is None:
+        try:
+            estimated = int(native_estimator(data_multiplier=1))
+        except TypeError as exc:
+            return ResourceRejection("ebm_estimate_mem_signature_rejected", estimated, overhead, available,
+                                     int(available * fraction))
+    limit = int(available * fraction)
+    if estimated + overhead > limit:
+        return ResourceRejection("memory_gate_exceeded", estimated, overhead, available, limit)
+    inner = probe
     try:
-        inner.fit(_slice(X, outer_train), _slice(y, outer_train), bags=bags[outer_train])
-    except TypeError:
-        inner.fit(_slice(X, inner_train), _slice(y, inner_train))
+        inner.fit(_slice(model_X, outer_train), _slice(y, outer_train), bags=bags_outer)
+    except TypeError as exc:
+        return ResourceRejection("ebm_temporal_bags_rejected", estimated, overhead, available, limit)
     chosen_rounds = int(getattr(inner, "best_iteration_", getattr(inner, "max_rounds", max_rounds)))
     chosen_rounds = max(1, chosen_rounds)
-    refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1)
+    refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1,
+                        early_stopping_rounds=0)
     refit = estimator_factory(**refit_params)
-    refit.fit(_slice(X, outer_train), _slice(y, outer_train))
-    report = _positive_proba(refit, _slice(X, dates == fold.outer_valid_date))
-    return FittedFoldModel(refit, chosen_rounds, 0.0, "ebm_classifier", fold.name, report,
-                           metadata={"estimated_model_memory": estimated, "measured_overhead": overhead})
+    refit.fit(_slice(model_X, outer_train), _slice(y, outer_train))
+    report = _positive_proba(refit, _slice(model_X, dates == fold.outer_valid_date))
+    return FittedFoldModel(refit, chosen_rounds, float(time.perf_counter() - started), "ebm_classifier", fold.name, report,
+                           metadata={"estimated_model_memory": estimated, "measured_overhead": overhead,
+                                     "available_memory": available, "resource_gate_fraction": fraction,
+                                     "inner_bags": base["inner_bags"], "n_jobs": base["n_jobs"],
+                                     "max_configurations": min(12, max_configurations),
+                                     "pilot_wall_clock_seconds": pilot_wall_clock_seconds,
+                                     "temporal_bags": True})

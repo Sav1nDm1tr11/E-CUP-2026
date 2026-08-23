@@ -28,6 +28,19 @@ class InferenceTests(unittest.TestCase):
                               calibrator=RecordingCalibrator(), weights=np.array([1.0]),
                               feature_names=("feature_a", "feature_b"), expected_user_ids=["u1"])
 
+    def test_inference_rejects_extra_feature_and_out_of_range_probability(self):
+        frame = pd.DataFrame({"user_id": ["u1"], "feature_a": [1.0], "feature_b": [2.0], "extra": [3.0]})
+        with self.assertRaises(ValueError):
+            predict_ensemble(frame, classifiers=[RecordingClassifier(0.5)], positive_regressor=RecordingRegressor(),
+                              weights=[1.0], feature_names=("feature_a", "feature_b"))
+        class BadClassifier(RecordingClassifier):
+            def predict_proba(self, frame):
+                return np.column_stack([np.zeros(len(frame)), np.full(len(frame), 1.1)])
+        frame = frame.drop(columns="extra")
+        with self.assertRaises(ValueError):
+            predict_ensemble(frame, classifiers=[BadClassifier(0.5)], positive_regressor=RecordingRegressor(),
+                              weights=[1.0], feature_names=("feature_a", "feature_b"))
+
     def test_submission_validation_accepts_250000_rows_without_feature_matrix(self):
         user_ids = pd.Series([f"u{i}" for i in range(250_000)], name="user_id")
         submission = pd.DataFrame({"user_id": user_ids, "prediction": np.zeros(250_000)})
