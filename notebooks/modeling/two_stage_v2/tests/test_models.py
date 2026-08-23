@@ -38,13 +38,19 @@ class ModelContractTests(unittest.TestCase):
         self.assertIsInstance(result, FittedFoldModel)
         self.assertEqual(len(RecordingEstimator.fit_calls), 2)
         self.assertEqual(len(RecordingEstimator.init_calls), 2)
+        self.assertEqual(result.best_iteration, 7)
+        self.assertGreater(result.best_iteration, 0)
+        self.assertEqual(RecordingEstimator.init_calls[1]["n_estimators"], 7)
         inner_X, _inner_y, inner_kwargs = RecordingEstimator.fit_calls[0]
         refit_X, _refit_y, refit_kwargs = RecordingEstimator.fit_calls[1]
         self.assertEqual(set(inner_X.index), set(pd.to_datetime(["2025-04-19", "2025-05-19"])))
+        self.assertEqual(len(inner_X), 4)
         self.assertIn("eval_set", inner_kwargs)
         eval_X, _eval_y = inner_kwargs["eval_set"][0]
         self.assertEqual(set(eval_X.index), {pd.Timestamp("2025-06-18")})
+        self.assertEqual(len(eval_X), 2)
         self.assertEqual(set(refit_X.index), set(pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18"])))
+        self.assertEqual(len(refit_X), 6)
         self.assertNotIn("eval_set", refit_kwargs)
         self.assertEqual(RecordingEstimator.init_calls[1].get("n_estimators"), result.best_iteration)
         self.assertNotIn(pd.Timestamp("2025-07-18"), refit_X.index.tolist())
