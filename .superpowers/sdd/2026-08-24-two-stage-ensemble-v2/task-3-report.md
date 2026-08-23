@@ -13,7 +13,7 @@ Created the seven owned core modules under `notebooks/modeling/two_stage_v2/src/
 - sklearn-compatible sigmoid calibration;
 - deterministic convex simplex blending, soft-log/expm1 prediction, and serializable past-only `BlendState`.
 
-Review hardening additionally makes the blend boundary an explicit trusted input, requires `cutoff_date` plus both `p_lgbm` and `p_catboost`, validates binary target consistency, and records JSON-safe candidate diagnostics. Governance now uses the frozen current `p_lgbm` per-cutoff baseline with exact tolerances `LogLoss + 0.0010` and `Brier + 0.0005`; candidates must pass every cutoff. Candidate fit objective is exactly `mean(fold RMSLE) + 0.25 * std(fold RMSLE)` (zero stability term for one fold). Feature validation permits NaN but rejects infinity without a full float64 matrix copy; bootstrap samples retain every fold; and default configuration contains the approved cutoff/report dates and explicit search budgets.
+Review hardening additionally makes the blend boundary an explicit trusted input, requires `cutoff_date` plus both `p_lgbm` and `p_catboost`, validates binary target consistency, and records JSON-safe candidate diagnostics. Governance now uses the frozen current `p_lgbm` per-cutoff baseline with exact tolerances `LogLoss + 0.0010` and `Brier + 0.0005`; candidates must pass every cutoff. Candidate fit objective is exactly `mean(fold RMSLE) + 0.25 * sample_std(fold RMSLE)` with `ddof=1` (zero stability term for one fold). Feature validation permits NaN but rejects infinity without a full float64 matrix copy; bootstrap samples retain every fold; and default configuration contains the approved cutoff/report dates and explicit search budgets.
 
 ## Verification
 

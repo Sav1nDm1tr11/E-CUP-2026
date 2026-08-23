@@ -172,7 +172,8 @@ def fit_walk_forward_blend(past_oof, positive_log, actual_gmv, config, *, traine
                 ),
             })
         fold_rmsle = np.asarray([item["rmsle"] for item in fold_metrics], dtype=float)
-        objective = float(fold_rmsle.mean() + 0.25 * (fold_rmsle.std() if len(fold_rmsle) > 1 else 0.0))
+        stability = fold_rmsle.std(ddof=1) if len(fold_rmsle) > 1 else 0.0
+        objective = float(fold_rmsle.mean() + 0.25 * stability)
         accepted = all(item["accepted"] for item in fold_metrics)
         diagnostics.append({
             "weights": [float(value) for value in weights], "objective": objective,

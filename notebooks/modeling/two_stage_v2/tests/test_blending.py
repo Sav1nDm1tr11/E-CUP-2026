@@ -88,7 +88,7 @@ class BlendingTests(unittest.TestCase):
                                        {"trained_through": pd.Timestamp("2025-06-18")})
         selected = next(item for item in state.diagnostics if tuple(item["weights"]) == state.weights)
         scores = np.asarray([item["rmsle"] for item in selected["fold_metrics"]])
-        self.assertAlmostEqual(state.objective, scores.mean() + 0.25 * scores.std())
+        self.assertAlmostEqual(state.objective, scores.mean() + 0.25 * scores.std(ddof=1))
         self.assertTrue(all("logloss_current" in item and "brier_current" in item
                             for item in selected["fold_metrics"]))
 
