@@ -11,7 +11,7 @@ class RecordingEstimator:
     fit_calls = []
 
     def fit(self, X, y, **kwargs):
-        self.fit_calls.append((len(X), kwargs))
+        self.fit_calls.append((X.copy(), y.copy(), kwargs))
         return self
 
     def predict_proba(self, X):
@@ -30,7 +30,13 @@ class ModelContractTests(unittest.TestCase):
         )
         self.assertIsInstance(result, FittedFoldModel)
         self.assertEqual(len(RecordingEstimator.fit_calls), 2)
-        inner_rows, refit_rows = [call[0] for call in RecordingEstimator.fit_calls]
-        self.assertGreater(refit_rows, inner_rows)
-        self.assertNotIn(pd.Timestamp("2025-07-18"), fold.inner_train_dates)
-
+        inner_X, _inner_y, inner_kwargs = RecordingEstimator.fit_calls[0]
+        refit_X, _refit_y, refit_kwargs = RecordingEstimator.fit_calls[1]
+        self.assertEqual(set(inner_X["cutoff_date"]), set(pd.to_datetime(["2025-04-19", "2025-05-19"])))
+        self.assertIn("eval_set", inner_kwargs)
+        eval_X, _eval_y = inner_kwargs["eval_set"][0]
+        self.assertEqual(set(eval_X["cutoff_date"]), {pd.Timestamp("2025-06-18")})
+        self.assertEqual(set(refit_X["cutoff_date"]), set(pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18"])))
+        self.assertNotIn("eval_set", refit_kwargs)
+        self.assertEqual(refit_kwargs.get("n_estimators"), result.best_iteration)
+        self.assertNotIn(pd.Timestamp("2025-07-18"), refit_X["cutoff_date"].tolist())

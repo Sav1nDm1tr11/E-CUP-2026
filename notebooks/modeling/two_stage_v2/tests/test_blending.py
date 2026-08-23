@@ -1,8 +1,9 @@
 import unittest
 
 import numpy as np
+import pandas as pd
 
-from src.blending import combine_predictions, simplex_grid
+from src.blending import combine_predictions, fit_walk_forward_blend, simplex_grid
 
 
 class BlendingTests(unittest.TestCase):
@@ -20,3 +21,17 @@ class BlendingTests(unittest.TestCase):
         np.testing.assert_allclose(result.prediction_log, [0.5, 0.0])
         np.testing.assert_allclose(result.prediction, np.expm1([0.5, 0.0]))
 
+    def test_walk_forward_blend_uses_past_oof_only_and_records_cutoff(self):
+        past = pd.DataFrame({
+            "cutoff_date": pd.to_datetime(["2025-05-19", "2025-06-18"]),
+            "p_lgbm": [0.2, 0.8], "p_catboost": [0.3, 0.7],
+            "predicted_positive_log": [1.0, 2.0], "target_gmv_30d": [0.0, 3.0],
+            "target_nonzero": [0, 1],
+        })
+        state = fit_walk_forward_blend(past, positive_log=past["predicted_positive_log"],
+                                       actual_gmv=past["target_gmv_30d"],
+                                       config={"trained_through": pd.Timestamp("2025-06-18")})
+        self.assertEqual(pd.Timestamp(state.trained_through), pd.Timestamp("2025-06-18"))
+        self.assertEqual(len(state.weights), 2)
+        np.testing.assert_allclose(np.sum(state.weights), 1.0)
+        self.assertNotIn(pd.Timestamp("2025-07-18"), getattr(state, "report_dates", ()))

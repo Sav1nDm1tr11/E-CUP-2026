@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from src.calibration import SigmoidCalibrator
+from sklearn.base import clone
 
 
 class CalibrationTests(unittest.TestCase):
@@ -15,4 +16,7 @@ class CalibrationTests(unittest.TestCase):
         np.testing.assert_allclose(result.sum(axis=1), 1.0)
         self.assertTrue(np.isfinite(result).all())
         self.assertTrue(np.isfinite([calibrator.a, calibrator.b]).all())
-
+        self.assertTrue((result >= 0).all() and (result <= 1).all())
+        self.assertGreater(result[-1, 1], result[0, 1])
+        self.assertNotEqual(result[0, 1], result[1, 1])
+        self.assertEqual(clone(calibrator).get_params(), calibrator.get_params())

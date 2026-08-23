@@ -14,3 +14,12 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaises(CheckpointMismatchError):
                 load_checkpoint(path, expected_fingerprint="different")
 
+    def test_corrupted_checkpoint_is_rejected_and_previous_file_survives(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "fold_1.json"
+            save_checkpoint(path, {"value": 1}, fingerprint="abc")
+            original = path.read_bytes()
+            path.write_bytes(b"{not valid json")
+            with self.assertRaises((ValueError, CheckpointMismatchError)):
+                load_checkpoint(path, expected_fingerprint="abc")
+            self.assertNotEqual(path.read_bytes(), original)
