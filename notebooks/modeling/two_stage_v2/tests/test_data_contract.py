@@ -43,6 +43,8 @@ class DataContractTests(unittest.TestCase):
             frame = load_cutoff_frame(path, [pd.Timestamp("2025-07-18")],
                                       columns=("cutoff_date", "feature_0", "target_nonzero"))
             self.assertEqual(len(frame), 1)
+            self.assertEqual(frame.iloc[0]["cutoff_date"], pd.Timestamp("2025-07-18"))
+            self.assertEqual(frame.iloc[0]["feature_0"], 1.0)
             self.assertEqual(frame["target_nonzero"].dtype, np.dtype("int8"))
 
     def test_submission_validation_enforces_order_and_nonnegative_finite_values(self):
@@ -59,6 +61,8 @@ class DataContractTests(unittest.TestCase):
             validate_submission(actual.iloc[:1], expected, expected_rows=2)
         with self.assertRaises(ValueError):
             validate_submission(actual.assign(user_id=["u1", "u1"]), expected, expected_rows=2)
+        with self.assertRaises(ValueError):
+            validate_submission(actual.iloc[::-1].reset_index(drop=True), expected, expected_rows=2)
 
     def test_feature_columns_are_loaded_as_a_stable_tuple(self):
         with tempfile.TemporaryDirectory() as temp_dir:

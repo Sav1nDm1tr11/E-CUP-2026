@@ -16,6 +16,7 @@ class MetricsTests(unittest.TestCase):
             candidate=np.array([0.0, 1.0, 4.0, 2.0]),
             baseline=np.array([0.0, 2.0, 5.0, 3.0]),
             group=np.array(["a", "a", "b", "b"]),
+            fold=np.array([1, 1, 2, 2]),
             n_resamples=25,
             seed=42,
         )
@@ -23,9 +24,14 @@ class MetricsTests(unittest.TestCase):
         self.assertLessEqual(result.ci_low, result.ci_high)
         self.assertEqual(result.delta, result.point_delta)
         self.assertLess(result.delta, 0.0)
+        expected_delta = np.mean([
+            rmsle(np.array([0.0, 1.0]), np.array([0.0, 1.0])) - rmsle(np.array([0.0, 2.0]), np.array([0.0, 2.0])),
+            rmsle(np.array([4.0, 2.0]), np.array([4.0, 2.0])) - rmsle(np.array([5.0, 3.0]), np.array([5.0, 3.0])),
+        ])
+        self.assertAlmostEqual(result.delta, expected_delta)
         repeat = paired_cluster_bootstrap_delta(
             actual=np.array([0.0, 1.0, 4.0, 2.0]), candidate=np.array([0.0, 1.0, 4.0, 2.0]),
-            baseline=np.array([0.0, 2.0, 5.0, 3.0]), group=np.array(["a", "a", "b", "b"]),
+            baseline=np.array([0.0, 2.0, 5.0, 3.0]), group=np.array(["a", "a", "b", "b"]), fold=np.array([1, 1, 2, 2]),
             n_resamples=25, seed=42,
         )
         self.assertEqual(result, repeat)

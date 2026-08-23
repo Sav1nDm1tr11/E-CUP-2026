@@ -13,6 +13,9 @@ class BlendingTests(unittest.TestCase):
         self.assertEqual(len({tuple(row) for row in weights}), 6)
         np.testing.assert_allclose(weights.sum(axis=1), 1.0)
         self.assertTrue((weights >= 0).all())
+        np.testing.assert_allclose(weights, simplex_grid(model_count=3, step=0.5))
+        self.assertIn((1.0, 0.0, 0.0), {tuple(row) for row in weights})
+        self.assertIn((0.0, 0.0, 1.0), {tuple(row) for row in weights})
 
     def test_soft_log_prediction_matches_manual_formula(self):
         result = combine_predictions(
@@ -34,4 +37,10 @@ class BlendingTests(unittest.TestCase):
         self.assertEqual(pd.Timestamp(state.trained_through), pd.Timestamp("2025-06-18"))
         self.assertEqual(len(state.weights), 2)
         np.testing.assert_allclose(np.sum(state.weights), 1.0)
+        self.assertTrue(np.isfinite([state.calibrator_a, state.calibrator_b, state.epsilon, state.objective]).all())
         self.assertNotIn(pd.Timestamp("2025-07-18"), getattr(state, "report_dates", ()))
+        future = pd.concat([past, past.iloc[[0]].assign(cutoff_date=pd.Timestamp("2025-07-18"))])
+        with self.assertRaises(ValueError):
+            fit_walk_forward_blend(future, positive_log=future["predicted_positive_log"],
+                                   actual_gmv=future["target_gmv_30d"],
+                                   config={"trained_through": pd.Timestamp("2025-06-18")})

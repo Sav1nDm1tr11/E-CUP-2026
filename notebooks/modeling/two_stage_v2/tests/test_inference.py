@@ -9,7 +9,7 @@ from src.validation import validate_submission
 
 class InferenceTests(unittest.TestCase):
     def test_inference_preserves_expected_user_order(self):
-        frame = pd.DataFrame({"user_id": ["u2", "u1"], "feature_b": [2.0, 1.0], "feature_a": [1.0, 2.0]})
+        frame = pd.DataFrame({"user_id": ["u2", "u1"], "feature_a": [1.0, 2.0], "feature_b": [2.0, 1.0]})
         classifiers = [RecordingClassifier(0.25), RecordingClassifier(0.5)]
         result = predict_ensemble(frame, classifiers=classifiers, positive_regressor=RecordingRegressor(),
                                   calibrator=RecordingCalibrator(), weights=np.array([0.5, 0.5]),
@@ -17,12 +17,15 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(result.user_id.tolist(), ["u2", "u1"])
         self.assertEqual(classifiers[0].columns_seen, ["feature_a", "feature_b"])
         np.testing.assert_allclose(result.prediction, np.expm1(np.array([0.375, 0.375]) * 2.0))
+        for field in ("raw_base_probabilities", "blended_probability", "calibrated_probability",
+                      "positive_log", "prediction_log", "prediction"):
+            self.assertTrue(hasattr(result, field), field)
 
     def test_inference_rejects_wrong_feature_order(self):
         frame = pd.DataFrame({"user_id": ["u1"], "feature_b": [2.0], "feature_a": [1.0]})
         with self.assertRaises(ValueError):
-            predict_ensemble(frame, classifiers=[], positive_regressor=RecordingRegressor(),
-                              calibrator=RecordingCalibrator(), weights=np.array([]),
+            predict_ensemble(frame, classifiers=[RecordingClassifier(0.5)], positive_regressor=RecordingRegressor(),
+                              calibrator=RecordingCalibrator(), weights=np.array([1.0]),
                               feature_names=("feature_a", "feature_b"), expected_user_ids=["u1"])
 
     def test_submission_validation_accepts_250000_rows_without_feature_matrix(self):

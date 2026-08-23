@@ -17,7 +17,9 @@ class TemporalSplitTests(unittest.TestCase):
         self.assertEqual(fold.inner_valid_date, pd.Timestamp("2025-06-18"))
         self.assertEqual(fold.outer_valid_date, pd.Timestamp("2025-07-18"))
         self.assertEqual(tuple(fold.train_dates), tuple(dates[:3]))
-        self.assertLess(max(fold.train_dates), fold.inner_valid_date)
+        self.assertEqual(max(fold.train_dates), fold.inner_valid_date)
+        self.assertEqual(tuple(fold.train_dates[:-1]), tuple(dates[:2]))
+        self.assertLess(max(fold.train_dates[:-1]), fold.inner_valid_date)
 
     def test_expanding_split_keeps_outer_report_labels_out_of_fit(self):
         frame = toy_cutoff_frame()
