@@ -1,6 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+import types
+from unittest.mock import patch
+
+import numpy as np
 
 from src.artifacts import (
     ArtifactBundle,
@@ -78,8 +83,8 @@ class ArtifactTests(unittest.TestCase):
 
     def test_sklearn_lightgbm_adapter_uses_native_booster_save(self):
         class Booster:
-            def save_model(self, path):
-                Path(path).write_bytes(b"native-booster")
+            def model_to_string(self):
+                return "native-booster"
         class Wrapper:
             booster_ = Booster()
             def save_model(self, path):
@@ -87,7 +92,33 @@ class ArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "classifier.txt"
             save_model(path, Wrapper())
-            self.assertEqual(path.read_bytes(), b"native-booster")
+            self.assertEqual(path.read_text(encoding="utf-8"), "native-booster")
+
+    def test_lightgbm_text_round_trip_is_utf8_safe_for_unicode_paths(self):
+        class NativeBooster:
+            def model_to_string(self):
+                return "модель\nfeature=0\n"
+
+        class Wrapper:
+            booster_ = NativeBooster()
+
+        class LoadedBooster:
+            def __init__(self, *, model_str=None, model_file=None):
+                if model_file is not None or model_str is None:
+                    raise AssertionError("LightGBM must be loaded from UTF-8 model_str")
+                self.model_str = model_str
+
+            def predict(self, X):
+                return np.full(len(X), 0.25 if "модель" in self.model_str else 0.0)
+
+        fake_lightgbm = types.SimpleNamespace(Booster=LoadedBooster)
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(sys.modules, {"lightgbm": fake_lightgbm}):
+            path = Path(temp_dir) / "модели" / "классификатор.txt"
+            save_model(path, Wrapper())
+            self.assertIn("модель", path.read_text(encoding="utf-8"))
+            from src.artifacts import load_model
+            loaded = load_model(path)
+            np.testing.assert_allclose(loaded.predict(np.zeros((3, 1))), [0.25, 0.25, 0.25])
 
     def test_bundle_save_load_persists_all_components_and_provenance(self):
         names = tuple(f"feature_{i}" for i in range(91))

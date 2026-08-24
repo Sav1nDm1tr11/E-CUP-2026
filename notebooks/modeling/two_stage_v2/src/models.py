@@ -149,6 +149,21 @@ def _params(config: Any, name: str) -> dict[str, Any]:
     return {}
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert estimator diagnostics into values safe for checkpoint JSON."""
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
 def _positive_iteration(estimator: Any, fallback: int) -> int:
     for name in ("best_iteration_", "best_iteration", "tree_count_", "get_best_iteration"):
         value = getattr(estimator, name, None)
@@ -263,6 +278,7 @@ def _two_phase_lgbm(
         eval_set=[(_slice(model_X, inner_valid), _slice(y_values, inner_valid))],
         callbacks=callbacks,
     )
+    selection_history = _json_safe(getattr(inner_estimator, "evals_result_", {}))
     best_iteration = _positive_iteration(inner_estimator, base["n_estimators"])
     refit_params = dict(base)
     refit_params["n_estimators"] = best_iteration
@@ -280,7 +296,8 @@ def _two_phase_lgbm(
     del inner_estimator
     gc.collect()
     return FittedFoldModel(refit_estimator, best_iteration, float(elapsed), model_name, fold.name,
-                           report_prediction, metadata={"inner_valid_date": str(fold.inner_valid_date)})
+                           report_prediction, metadata={"inner_valid_date": str(fold.inner_valid_date),
+                                                        "selection_history": {"evals_result": selection_history}})
 
 
 def fit_lgbm_classifier(
@@ -438,6 +455,14 @@ def refit_catboost_classifier(
     fixed = _fixed_params(params, rounds_key="iterations", rounds=iterations)
     fixed["use_best_model"] = False
     fixed.setdefault("allow_writing_files", False)
+    fixed.setdefault("loss_function", "Logloss")
+    fixed.setdefault("eval_metric", "Logloss")
+    fixed.setdefault("bootstrap_type", "Bayesian")
+    fixed.setdefault("boosting_type", "Plain")
+    fixed.setdefault("grow_policy", "SymmetricTree")
+    fixed.setdefault("nan_mode", "Min")
+    fixed.setdefault("random_seed", 42)
+    fixed.setdefault("auto_class_weights", None)
     fixed["thread_count"] = min(10, int(fixed.get("thread_count", 10)))
     estimator = factory(**fixed)
     started = time.perf_counter()
@@ -608,6 +633,7 @@ def fit_catboost_classifier(
     positive = raw_positive[order]
     actual = raw_actual[order]
     process = None
+    candidate_histories: list[dict[str, Any]] = []
     try:
         import psutil
         process = psutil.Process()
@@ -617,7 +643,7 @@ def fit_catboost_classifier(
         if ordered:
             return ResourceRejection("ordered_memory_measurement_unavailable", 0, 0, 0, 0)
     started = time.perf_counter()
-    for candidate in candidates:
+    for trial_index, candidate in enumerate(candidates):
         trial_params = dict(base, **candidate)
         trial = factory(**trial_params)
         fit_kwargs = {"eval_set": [(_slice(model_X, inner_valid), _slice(y, inner_valid))],
@@ -628,6 +654,14 @@ def fit_catboost_classifier(
             # Compatibility retry may remove only early_stopping_rounds;
             # inner eval_set remains mandatory.
             trial.fit(_slice(model_X, inner_train), _slice(y, inner_train), eval_set=fit_kwargs["eval_set"])
+        get_history = getattr(trial, "get_evals_result", None)
+        if callable(get_history):
+            try:
+                history = _json_safe(get_history())
+            except Exception:
+                history = None
+            if history:
+                candidate_histories.append({"trial": trial_index, "evals_result": history})
         valid_probability = _positive_proba(trial, _slice(model_X, inner_valid))
         if process is not None:
             peak_memory = max(peak_memory, int(process.memory_info().rss))
@@ -646,6 +680,7 @@ def fit_catboost_classifier(
         "objective": objective_name, "trials": len(candidates),
         "fit_seconds": float(time.perf_counter() - started),
         "peak_memory_bytes": peak_memory,
+        "selection_history": candidate_histories,
     }
     if ordered and plain_metrics is None:
         return ResourceRejection("ordered_governance_metrics_unavailable", 0, 0, 0, 0)
@@ -912,12 +947,18 @@ def fit_ebm_classifier(
     positive_rounds = rounds_array[np.isfinite(rounds_array) & (rounds_array > 0)] if rounds_array.ndim else rounds_array
     chosen_rounds = int(np.max(positive_rounds)) if np.size(positive_rounds) else int(max_rounds)
     chosen_rounds = max(1, chosen_rounds)
+    selection_history = {
+        "best_iteration": _json_safe(raw_rounds),
+        "best_iteration_shape": list(rounds_array.shape),
+        "max_positive_stage_bag": chosen_rounds,
+    }
     inner_probability = _positive_proba(inner, _slice(model_X, inner_valid))
     inner_prediction = np.expm1(inner_probability * np.maximum(positive[inner_valid], 0.0))
     inner_score = float(rmsle(actual[inner_valid], inner_prediction))
     if _selection_only:
         return FittedFoldModel(inner, chosen_rounds, float(time.perf_counter() - started), "ebm_classifier",
-                               fold.name, np.empty(0, dtype=float), metadata={"inner_score": inner_score})
+                               fold.name, np.empty(0, dtype=float), metadata={"inner_score": inner_score,
+                                                                                "selection_history": selection_history})
     refit_params = dict(base, max_rounds=chosen_rounds, validation_size=0, outer_bags=1,
                         early_stopping_rounds=0)
     refit_params.pop("callback", None)
@@ -931,4 +972,5 @@ def fit_ebm_classifier(
                                      "max_configurations": min(12, max_configurations),
                                      "pilot_wall_clock_seconds": pilot_wall_clock_seconds,
                                      "temporal_bags": True,
-                                     "selected_rounds_aggregation": "max_positive_stage_bag"})
+                                     "selected_rounds_aggregation": "max_positive_stage_bag",
+                                     "selection_history": selection_history})

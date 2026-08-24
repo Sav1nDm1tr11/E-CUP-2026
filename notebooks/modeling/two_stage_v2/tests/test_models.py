@@ -73,6 +73,20 @@ class ModelContractTests(unittest.TestCase):
         self.assertEqual(RecordingEstimator.init_calls[-1]["iterations"], 23)
         self.assertFalse(RecordingEstimator.init_calls[-1]["use_best_model"])
 
+    def test_fixed_catboost_refit_applies_exact_safe_defaults(self):
+        frame = pd.DataFrame({"user_id": [1, 2], "cutoff_date": pd.to_datetime(["2025-01-01", "2025-02-01"]),
+                              "feature_0": [1.0, 2.0]})
+        RecordingEstimator.init_calls.clear()
+        refit_catboost_classifier(frame, [0, 1], params={}, iterations=11, estimator_factory=RecordingEstimator)
+        init = RecordingEstimator.init_calls[-1]
+        keys = ("loss_function", "eval_metric", "bootstrap_type", "boosting_type", "grow_policy", "nan_mode",
+                "random_seed", "auto_class_weights", "allow_writing_files", "thread_count", "use_best_model")
+        self.assertEqual({key: init[key] for key in keys},
+                         {"loss_function": "Logloss", "eval_metric": "Logloss", "bootstrap_type": "Bayesian",
+                          "boosting_type": "Plain", "grow_policy": "SymmetricTree", "nan_mode": "Min",
+                          "random_seed": 42, "auto_class_weights": None, "allow_writing_files": False,
+                          "thread_count": 10, "use_best_model": False})
+
     def test_fixed_ebm_refit_uses_production_contract_and_gate(self):
         calls = []
         class EBM:
@@ -128,6 +142,19 @@ class ModelContractTests(unittest.TestCase):
         self.assertNotIn("eval_set", refit_kwargs)
         self.assertEqual(RecordingEstimator.init_calls[1].get("n_estimators"), result.best_iteration)
         self.assertNotIn(pd.Timestamp("2025-07-18"), refit_X.index.tolist())
+
+    def test_lightgbm_selection_history_is_captured_without_synthetic_points(self):
+        class HistoryEstimator(RecordingEstimator):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.evals_result_ = {"valid_0": {"binary_logloss": [0.7, 0.5, 0.4]}}
+        dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
+        frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},
+                             index=pd.DatetimeIndex(dates.repeat(2), name="cutoff_date"))
+        fold = build_nested_folds(dates, [pd.Timestamp("2025-07-18")])[0]
+        result = fit_lgbm_classifier(frame, [0, 1] * 4, fold, estimator_factory=HistoryEstimator)
+        self.assertEqual(result.metadata["selection_history"]["evals_result"]["valid_0"]["binary_logloss"],
+                         [0.7, 0.5, 0.4])
 
     def test_lightgbm_refuses_estimator_that_drops_required_eval_set(self):
         class RejectingEstimator(RecordingEstimator):
@@ -189,6 +216,27 @@ class ModelContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["selected_params"], {"depth": 2})
         self.assertEqual(result.estimator.kwargs["depth"], 2)
 
+    def test_catboost_selection_history_uses_native_evals_result(self):
+        class CatHistory:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.best_iteration_ = 2
+            def fit(self, X, y, **kwargs):
+                return self
+            def predict_proba(self, X):
+                return np.column_stack([np.full(len(X), 0.5), np.full(len(X), 0.5)])
+            def get_evals_result(self):
+                return {"validation": {"Logloss": [0.6, 0.4]}}
+        dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
+        frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float)},
+                             index=pd.DatetimeIndex(dates.repeat(2), name="cutoff_date"))
+        fold = build_nested_folds(dates, [pd.Timestamp("2025-07-18")])[0]
+        result = fit_catboost_classifier(frame, [0, 1] * 4, fold, estimator_factory=CatHistory,
+                                         param_distributions={"depth": [6]}, trials=1,
+                                         inner_positive_log=np.ones(len(frame)), actual_gmv=np.ones(len(frame)))
+        self.assertEqual(result.metadata["governance"]["selection_history"][0]["evals_result"]["validation"]["Logloss"],
+                         [0.6, 0.4])
+
     def test_ordered_requires_finite_plain_governance_metrics(self):
         class OrderedFake(RecordingEstimator):
             def __init__(self, **kwargs):
@@ -242,6 +290,7 @@ class ModelContractTests(unittest.TestCase):
         self.assertIsInstance(accepted, FittedFoldModel)
         self.assertEqual(EBM.fits[0][2]["bags"].shape[1], 8)
         self.assertTrue((EBM.fits[0][2]["bags"] == -1).any())
+        self.assertEqual(accepted.metadata["selection_history"]["best_iteration"], 3)
 
     def test_ebm_default_overhead_measurement_and_array_rounds_are_safe(self):
         dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])

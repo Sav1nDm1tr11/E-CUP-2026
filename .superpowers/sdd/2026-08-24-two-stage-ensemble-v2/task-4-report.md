@@ -3,9 +3,9 @@
 ## Raw verification summaries
 
 - Focused command: `python -m unittest tests.test_models tests.test_calibration tests.test_artifacts tests.test_inference -v`
-  - Latest run: **27/27 tests passed**, including fixed production refits, identity calibration, strict CatBoost objective/full-length validation/report ordering, exact 2D EBM bags/search/callback semantics, RSS-tree overhead, true bundle persistence/provenance and 91-feature inference regressions.
+  - Latest run: **31/31 tests passed**, including fixed production refits, identity calibration, UTF-8 native LightGBM round-trip, real LightGBM/CatBoost/EBM selection histories, strict CatBoost objective/full-length validation/report ordering, exact 2D EBM bags/search/callback semantics, RSS-tree overhead, true bundle persistence/provenance and 91-feature inference regressions.
 - Full v2 command: `python -m unittest discover -s tests -v`
-  - Latest run: **63 passed, 1 failed**. The only failure is the expected `test_required_distributions_are_installed`: the optional `interpret` distribution is absent. `models.py` does not import InterpretML at package import time; `fit_ebm_classifier` imports it only when EBM fitting is requested.
+  - Latest run: **70/70 passed**. The optional InterpretML environment check also passed in the current runtime; `models.py` still imports InterpretML lazily only when EBM fitting is requested.
 - `python -m compileall -q src`: passed.
 - Toy contract smoke: positive-only regressor fit used only positive rows for inner and outer refit, applied `log1p`, and returned a positive selected iteration; the 70% EBM memory gate returned a structured `ResourceRejection` before estimator construction.
 
@@ -18,6 +18,7 @@
 - Versioned manifests/bundles persist classifier files, positive regressor, calibrator, config/feature/data hashes, package versions, trained-through cutoff, blend history, and pre/post-January configs; `load_bundle` requires expected provenance hashes/version and validates alignment before use.
 - Inference consumes loaded bundle components, removes reserved fields from estimator matrices, validates exactly 91 unique ordered features/hash and model-weight alignment, rejects probabilities outside `[0,1]`, preserves expected user order, and emits raw base, weighted/calibrated probabilities, positive-log, prediction-log, and `expm1` GMV audit outputs.
 - Production refit APIs now return `FittedProductionModel` and deliberately perform no selection, early stopping, or `eval_set`: fixed-round LightGBM classifier/regressor (positive-only `log1p`), stable temporal/user-sorted CatBoost, and EBM with `validation_size=0`, `outer_bags=1`, `inner_bags=0`, `early_stopping_rounds=0`, native memory estimation, and measured same-settings overhead gate. `IdentityCalibrator` is clone/joblib-compatible and preserves `[1-p, p]` exactly.
+- Native LightGBM persistence serializes `model_to_string()` as UTF-8 into an atomic temporary path and restores with `Booster(model_str=...)`, including native boosters and Unicode Windows paths. Fold metadata preserves JSON-safe native selection histories; CatBoost production refits set explicit safe defaults and never pass `eval_set`.
 
 ## Concerns / follow-up
 

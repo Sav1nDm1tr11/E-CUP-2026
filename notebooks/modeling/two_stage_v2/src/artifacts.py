@@ -183,7 +183,10 @@ def save_bundle(path: Path, bundle: ArtifactBundle) -> None:
         filename = f"classifier_{index}{suffix}"
         save_model(target / filename, estimator)
         model_files.append(filename)
-    regressor_file = "positive_regressor.txt" if getattr(bundle.positive_regressor, "booster_", None) is not None else "positive_regressor.pkl"
+    regressor_file = "positive_regressor.txt" if (
+        getattr(bundle.positive_regressor, "booster_", None) is not None
+        or hasattr(bundle.positive_regressor, "model_to_string")
+    ) else "positive_regressor.pkl"
     save_model(target / regressor_file, bundle.positive_regressor)
     calibrator_file = None
     if bundle.calibrator is not None:
@@ -344,8 +347,11 @@ def save_model(path: Path, estimator: Any, *, model_kind: str | None = None) -> 
     os.close(fd)
     tmp = Path(tmp_name)
     try:
-        if suffix in {".txt", ".lightgbm"} and getattr(estimator, "booster_", None) is not None:
-            estimator.booster_.save_model(str(tmp))
+        native = getattr(estimator, "booster_", None)
+        if suffix in {".txt", ".lightgbm"} and native is not None and hasattr(native, "model_to_string"):
+            tmp.write_text(str(native.model_to_string()), encoding="utf-8")
+        elif suffix in {".txt", ".lightgbm"} and hasattr(estimator, "model_to_string"):
+            tmp.write_text(str(estimator.model_to_string()), encoding="utf-8")
         elif suffix in {".txt", ".cbm", ".lightgbm", ".catboost"} and hasattr(estimator, "save_model"):
             estimator.save_model(str(tmp))
         else:
@@ -364,7 +370,7 @@ def load_model(path: Path, *, model_kind: str | None = None) -> Any:
     kind = (model_kind or source.suffix.lower().lstrip(".")).lower()
     if kind in {"txt", "lightgbm", "lgbm", "lightgbm_sklearn"}:
         module = __import__("lightgbm", fromlist=["Booster"])
-        return module.Booster(model_file=str(source))
+        return module.Booster(model_str=source.read_text(encoding="utf-8"))
     if kind in {"cbm", "catboost", "catboost_classifier"}:
         module = __import__("catboost", fromlist=["CatBoostClassifier"])
         model = module.CatBoostClassifier()
