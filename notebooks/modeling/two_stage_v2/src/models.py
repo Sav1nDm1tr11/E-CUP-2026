@@ -43,6 +43,17 @@ class FittedFoldModel:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class FittedProductionModel:
+    """Result of a fixed, all-labeled-row production refit."""
+
+    estimator: Any
+    model_name: str
+    fit_seconds: float
+    rounds: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class ResourceRejection:
     """Structured result used when an optional model cannot fit safely."""
@@ -317,6 +328,201 @@ def fit_positive_lgbm_regressor(
                            groups=groups,
                            transform_y=lambda values: np.log1p(np.asarray(values, dtype=float)),
                            positive_mask=target > 0)
+
+
+def _production_frame_and_labels(X: pd.DataFrame, y: Sequence, *, binary: bool = True):
+    if not isinstance(X, pd.DataFrame) or len(X) == 0:
+        raise ValueError("X must be a non-empty pandas DataFrame")
+    values = np.asarray(y)
+    if values.ndim != 1 or len(values) != len(X):
+        raise ValueError("labels must have one value per X row")
+    try:
+        numeric = values.astype(float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("labels must be numeric") from exc
+    if not np.isfinite(numeric).all():
+        raise ValueError("labels must be finite")
+    if binary and not set(np.unique(numeric).tolist()).issubset({0.0, 1.0}):
+        raise ValueError("classifier labels must be binary")
+    frame = _feature_frame(X)
+    if frame.shape[1] == 0:
+        raise ValueError("X has no model features after reserved columns are removed")
+    return frame, numeric
+
+
+def _fixed_params(params: Mapping[str, Any] | None, *, rounds_key: str, rounds: int) -> dict[str, Any]:
+    if int(rounds) <= 0:
+        raise ValueError(f"{rounds_key} must be positive")
+    fixed = dict(params or {})
+    fixed.pop("eval_set", None)
+    fixed.pop("eval_names", None)
+    fixed.pop("callbacks", None)
+    fixed.pop("early_stopping_rounds", None)
+    fixed[rounds_key] = int(rounds)
+    if "n_jobs" in fixed:
+        fixed["n_jobs"] = min(10, int(fixed["n_jobs"]))
+    if "thread_count" in fixed:
+        fixed["thread_count"] = min(10, int(fixed["thread_count"]))
+    return fixed
+
+
+def refit_lgbm_classifier(
+    X: pd.DataFrame,
+    y: Sequence,
+    *,
+    params: Mapping[str, Any] | None,
+    n_estimators: int,
+    estimator_factory: Callable[..., Any] | None = None,
+) -> FittedProductionModel:
+    """Fit a fresh LightGBM classifier for a fixed positive round count."""
+    model_X, labels = _production_frame_and_labels(X, y)
+    factory = estimator_factory or _factory_default("lgbm_classifier")
+    fixed = _fixed_params(params, rounds_key="n_estimators", rounds=n_estimators)
+    estimator = factory(**fixed)
+    started = time.perf_counter()
+    estimator.fit(model_X, labels)
+    return FittedProductionModel(estimator, "lgbm_classifier", float(time.perf_counter() - started),
+                                 int(n_estimators), {"rows": len(model_X), "selection": False})
+
+
+def refit_positive_lgbm_regressor(
+    X: pd.DataFrame,
+    target: Sequence,
+    *,
+    params: Mapping[str, Any] | None,
+    n_estimators: int,
+    estimator_factory: Callable[..., Any] | None = None,
+) -> FittedProductionModel:
+    """Fit a positive-only LightGBM regressor on fixed log1p targets."""
+    model_X, values = _production_frame_and_labels(X, target, binary=False)
+    if (values < 0).any():
+        raise ValueError("target must be finite and non-negative")
+    positive = values > 0
+    if not positive.any():
+        raise ValueError("positive target rows are required for production refit")
+    factory = estimator_factory or _factory_default("lgbm_regressor")
+    fixed = _fixed_params(params, rounds_key="n_estimators", rounds=n_estimators)
+    estimator = factory(**fixed)
+    started = time.perf_counter()
+    estimator.fit(model_X.loc[positive], np.log1p(values[positive]))
+    return FittedProductionModel(estimator, "lgbm_regressor", float(time.perf_counter() - started),
+                                 int(n_estimators), {"rows": int(positive.sum()), "selection": False,
+                                                     "positive_only": True})
+
+
+def refit_catboost_classifier(
+    X: pd.DataFrame,
+    y: Sequence,
+    *,
+    params: Mapping[str, Any] | None,
+    iterations: int,
+    estimator_factory: Callable[..., Any] | None = None,
+    groups: Sequence[Any] | None = None,
+) -> FittedProductionModel:
+    """Fit CatBoost once on all rows, with deterministic temporal ordering."""
+    if not isinstance(X, pd.DataFrame) or len(X) == 0:
+        raise ValueError("X must be a non-empty pandas DataFrame")
+    values = np.asarray(y, dtype=float)
+    if values.ndim != 1 or len(values) != len(X) or not np.isfinite(values).all() or not set(np.unique(values).tolist()).issubset({0.0, 1.0}):
+        raise ValueError("classifier labels must be finite binary values matching X")
+    dates = _dates(X, groups)
+    order_frame = pd.DataFrame({"_cutoff": dates, "_position": np.arange(len(X))})
+    if "user_id" in X.columns:
+        order_frame["_user"] = X["user_id"].astype(str).to_numpy()
+        order_frame = order_frame.sort_values(["_cutoff", "_user", "_position"], kind="mergesort")
+    else:
+        order_frame = order_frame.sort_values(["_cutoff", "_position"], kind="mergesort")
+    order = order_frame["_position"].to_numpy(dtype=int)
+    model_X = _feature_frame(X.iloc[order])
+    factory = estimator_factory or _factory_default("catboost_classifier")
+    fixed = _fixed_params(params, rounds_key="iterations", rounds=iterations)
+    fixed["use_best_model"] = False
+    fixed.setdefault("allow_writing_files", False)
+    fixed["thread_count"] = min(10, int(fixed.get("thread_count", 10)))
+    estimator = factory(**fixed)
+    started = time.perf_counter()
+    estimator.fit(model_X, values[order])
+    return FittedProductionModel(estimator, "catboost_classifier", float(time.perf_counter() - started),
+                                 int(iterations), {"rows": len(model_X), "selection": False,
+                                                   "stable_temporal_sort": True})
+
+
+def refit_ebm_classifier(
+    X: pd.DataFrame,
+    y: Sequence,
+    *,
+    params: Mapping[str, Any] | None,
+    max_rounds: int,
+    available_memory: int | None = None,
+    estimator_factory: Callable[..., Any] | None = None,
+    memory_estimator: Callable[..., int] | None = None,
+    measured_overhead: int | None = None,
+    overhead_estimator: Callable[..., int] | None = None,
+    n_jobs: int = 10,
+) -> FittedProductionModel | ResourceRejection:
+    """Fit EBM once after a native estimate plus same-settings RSS gate."""
+    model_X, labels = _production_frame_and_labels(X, y)
+    if int(max_rounds) <= 0:
+        raise ValueError("max_rounds must be positive")
+    available = int(available_memory) if available_memory is not None else None
+    if available is None:
+        try:
+            import psutil
+            available = int(psutil.virtual_memory().available)
+        except (ImportError, AttributeError, OSError):
+            return ResourceRejection("ebm_available_memory_unavailable", 0, 0, 0, 0)
+    if available <= 0:
+        return ResourceRejection("ebm_available_memory_invalid", 0, 0, available, 0)
+    factory = estimator_factory
+    if factory is None:
+        module = importlib.import_module("interpret.glassbox")
+        factory = module.ExplainableBoostingClassifier
+    fixed = _fixed_params(params, rounds_key="max_rounds", rounds=max_rounds)
+    fixed.update({"validation_size": 0, "outer_bags": 1, "inner_bags": 0,
+                  "early_stopping_rounds": 0, "n_jobs": min(10, int(n_jobs))})
+    fixed.pop("callback", None)
+    probe = factory(**fixed)
+    native = getattr(probe, "estimate_mem", None)
+    if native is None and memory_estimator is None:
+        return ResourceRejection("ebm_native_estimate_mem_unavailable", 0, 0, available, int(available * 0.70))
+    try:
+        if memory_estimator is not None:
+            try:
+                estimated = int(memory_estimator(model_X, labels, data_multiplier=1))
+            except TypeError:
+                estimated = int(memory_estimator(model_X, data_multiplier=1))
+        else:
+            estimated = int(native(model_X, labels, data_multiplier=1))
+    except (TypeError, ValueError, OSError):
+        return ResourceRejection("ebm_estimate_mem_rejected", 0, 0, available, int(available * 0.70))
+    if estimated < 0:
+        return ResourceRejection("ebm_estimate_mem_invalid", estimated, 0, available, int(available * 0.70))
+    bags = np.ones((len(model_X), 1), dtype=np.int8)
+    if measured_overhead is not None:
+        overhead = int(measured_overhead)
+    elif overhead_estimator is not None:
+        try:
+            overhead = int(overhead_estimator(model_X, bags=bags, n_jobs=fixed["n_jobs"]))
+        except TypeError:
+            overhead = int(overhead_estimator(model_X, bags, fixed["n_jobs"]))
+    else:
+        overhead_value = _measure_ebm_toy_overhead(factory, fixed, model_X, labels, bags)
+        if overhead_value is None:
+            return ResourceRejection("ebm_overhead_measurement_unavailable", estimated, 0, available, int(available * 0.70))
+        overhead = int(overhead_value)
+    if overhead < 0:
+        return ResourceRejection("ebm_overhead_measurement_invalid", estimated, overhead, available, int(available * 0.70))
+    limit = int(available * 0.70)
+    if estimated + overhead > limit:
+        return ResourceRejection("memory_gate_exceeded", estimated, overhead, available, limit)
+    estimator = factory(**fixed)
+    started = time.perf_counter()
+    estimator.fit(model_X, labels)
+    return FittedProductionModel(estimator, "ebm_classifier", float(time.perf_counter() - started),
+                                 int(max_rounds), {"rows": len(model_X), "selection": False,
+                                                   "estimated_model_memory": estimated,
+                                                   "measured_overhead": overhead,
+                                                   "gate_limit": limit})
 
 
 def fit_catboost_classifier(

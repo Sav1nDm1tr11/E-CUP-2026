@@ -5,12 +5,17 @@ import pandas as pd
 
 from src.models import (
     FittedFoldModel,
+    FittedProductionModel,
     ModelFitRejection,
     ResourceRejection,
     fit_catboost_classifier,
     fit_ebm_classifier,
     fit_lgbm_classifier,
     fit_positive_lgbm_regressor,
+    refit_catboost_classifier,
+    refit_ebm_classifier,
+    refit_lgbm_classifier,
+    refit_positive_lgbm_regressor,
     _rss_tree_bytes,
 )
 from src.temporal_split import build_nested_folds
@@ -36,6 +41,63 @@ class RecordingEstimator:
 
 
 class ModelContractTests(unittest.TestCase):
+    def test_fixed_production_refits_use_all_rows_and_no_selection_arguments(self):
+        frame = pd.DataFrame({"user_id": [2, 1, 2], "cutoff_date": pd.to_datetime(["2025-03-01", "2025-02-01", "2025-03-01"]),
+                              "feature_0": [2.0, 1.0, 3.0]})
+        y = np.array([0, 1, 1])
+        RecordingEstimator.fit_calls.clear()
+        result = refit_lgbm_classifier(frame, y, params={"learning_rate": 0.1}, n_estimators=17,
+                                       estimator_factory=RecordingEstimator)
+        self.assertIsInstance(result, FittedProductionModel)
+        self.assertEqual(result.rounds, 17)
+        self.assertEqual(len(RecordingEstimator.fit_calls[-1][0]), 3)
+        self.assertEqual(RecordingEstimator.fit_calls[-1][2], {})
+        self.assertNotIn("cutoff_date", RecordingEstimator.fit_calls[-1][0].columns)
+        self.assertNotIn("user_id", RecordingEstimator.fit_calls[-1][0].columns)
+
+        target_result = refit_positive_lgbm_regressor(frame, np.array([0.0, 2.0, 3.0]), params={}, n_estimators=9,
+                                                      estimator_factory=RecordingEstimator)
+        self.assertEqual(target_result.rounds, 9)
+        self.assertEqual(len(RecordingEstimator.fit_calls[-1][0]), 2)
+        np.testing.assert_allclose(RecordingEstimator.fit_calls[-1][1], np.log1p([2.0, 3.0]))
+
+    def test_fixed_catboost_refit_forces_iterations_and_no_eval_set(self):
+        frame = pd.DataFrame({"user_id": ["z", "a", "b"], "cutoff_date": pd.to_datetime(["2025-03-01", "2025-01-01", "2025-02-01"]),
+                              "feature_0": [3.0, 1.0, 2.0]})
+        RecordingEstimator.fit_calls.clear()
+        result = refit_catboost_classifier(frame, [1, 0, 1], params={"depth": 6}, iterations=23,
+                                            estimator_factory=RecordingEstimator)
+        self.assertEqual(result.rounds, 23)
+        self.assertEqual(RecordingEstimator.fit_calls[-1][2], {})
+        self.assertEqual(len(RecordingEstimator.fit_calls[-1][0]), 3)
+        self.assertEqual(RecordingEstimator.init_calls[-1]["iterations"], 23)
+        self.assertFalse(RecordingEstimator.init_calls[-1]["use_best_model"])
+
+    def test_fixed_ebm_refit_uses_production_contract_and_gate(self):
+        calls = []
+        class EBM:
+            def __init__(self, **kwargs):
+                calls.append(("init", kwargs))
+            def estimate_mem(self, X, y, data_multiplier=1):
+                calls.append(("estimate", X.copy(), np.asarray(y).copy(), data_multiplier))
+                return 100
+            def fit(self, X, y, **kwargs):
+                calls.append(("fit", X.copy(), np.asarray(y).copy(), kwargs))
+                return self
+        accepted = refit_ebm_classifier(
+            pd.DataFrame({"cutoff_date": pd.to_datetime(["2025-01-01", "2025-02-01"]), "feature_0": [1., 2.]}),
+            [0, 1], params={}, max_rounds=31, available_memory=1000,
+            measured_overhead=10, estimator_factory=EBM,
+        )
+        self.assertIsInstance(accepted, FittedProductionModel)
+        self.assertEqual(accepted.rounds, 31)
+        init = calls[0][1]
+        self.assertEqual({key: init[key] for key in ("validation_size", "outer_bags", "inner_bags", "early_stopping_rounds")},
+                         {"validation_size": 0, "outer_bags": 1, "inner_bags": 0, "early_stopping_rounds": 0})
+        self.assertNotIn("callback", calls[-1][3])
+        rejected = refit_ebm_classifier(pd.DataFrame({"feature_0": [1.]}), [1], params={}, max_rounds=2,
+                                        available_memory=100, measured_overhead=1, estimator_factory=EBM)
+        self.assertIsInstance(rejected, ResourceRejection)
     def test_two_phase_fit_excludes_outer_report_and_refit_has_more_rows(self):
         dates = pd.to_datetime(["2025-04-19", "2025-05-19", "2025-06-18", "2025-07-18"])
         frame = pd.DataFrame({"feature_0": np.arange(8, dtype=float), "target_nonzero": [0, 1] * 4},

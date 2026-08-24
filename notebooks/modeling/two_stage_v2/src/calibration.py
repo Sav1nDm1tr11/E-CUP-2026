@@ -8,6 +8,42 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.utils.validation import check_is_fitted
 
 
+class IdentityCalibrator(ClassifierMixin, BaseEstimator):
+    """A cloneable calibrator that preserves already-calibrated probabilities."""
+
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+
+    @staticmethod
+    def _probability(values):
+        p = np.asarray(values, dtype=float).reshape(-1)
+        if len(p) == 0 or not np.isfinite(p).all() or (p < 0).any() or (p > 1).any():
+            raise ValueError("probability must be non-empty, finite, and in [0, 1]")
+        return p
+
+    def fit(self, probability, y=None):
+        p = self._probability(probability)
+        if not np.isfinite(float(self.threshold)) or not 0 <= float(self.threshold) <= 1:
+            raise ValueError("threshold must be finite and in [0, 1]")
+        if y is not None:
+            target = np.asarray(y).reshape(-1)
+            if len(target) != len(p) or set(np.unique(target).tolist()) - {0, 1}:
+                raise ValueError("probability and y must have equal length and binary labels")
+        self.classes_ = np.array([0, 1], dtype=np.int8)
+        self.n_features_in_ = 1
+        return self
+
+    def predict_proba(self, probability):
+        check_is_fitted(self, "classes_")
+        p = self._probability(probability)
+        return np.column_stack((1.0 - p, p))
+
+    def predict(self, probability):
+        check_is_fitted(self, "classes_")
+        p = self._probability(probability)
+        return (p >= float(self.threshold)).astype(np.int8)
+
+
 class SigmoidCalibrator(ClassifierMixin, BaseEstimator):
     def __init__(self, epsilon: float = 1e-6):
         self.epsilon = epsilon
