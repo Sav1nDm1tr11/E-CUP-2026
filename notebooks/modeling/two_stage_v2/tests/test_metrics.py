@@ -1,4 +1,5 @@
 import unittest
+import time
 
 import numpy as np
 
@@ -41,3 +42,29 @@ class MetricsTests(unittest.TestCase):
             fold=np.array([1, 1, 2, 2]), n_resamples=25, seed=42,
         )
         self.assertNotEqual((result.ci_low, result.ci_high), (reassigned.ci_low, reassigned.ci_high))
+
+    def test_cluster_bootstrap_large_row_scaling_uses_user_fold_sufficient_statistics(self):
+        n_users = 250_000
+        n_rows = n_users * 2
+        actual = np.zeros(n_rows, dtype=float)
+        candidate = np.ones(n_rows, dtype=float)
+        baseline = np.full(n_rows, 2.0, dtype=float)
+        groups = np.repeat(np.arange(n_users), 2)
+        folds = np.tile([0, 1], n_users)
+        started = time.perf_counter()
+        result = paired_cluster_bootstrap_delta(actual, candidate, baseline, groups, folds,
+                                                n_resamples=20, seed=17)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(result.n_resamples, 20)
+        self.assertLess(elapsed, 15.0)
+
+    def test_cluster_bootstrap_supports_two_thousand_resamples(self):
+        n_users = 1_000
+        groups = np.repeat(np.arange(n_users), 2)
+        folds = np.tile([0, 1], n_users)
+        result = paired_cluster_bootstrap_delta(
+            np.zeros(len(groups)), np.ones(len(groups)), np.full(len(groups), 2.0),
+            groups, folds, n_resamples=2_000, seed=19,
+        )
+        self.assertEqual(result.n_resamples, 2_000)
+        self.assertTrue(np.isfinite([result.ci_low, result.ci_high]).all())
