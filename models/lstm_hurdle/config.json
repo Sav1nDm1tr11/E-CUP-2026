@@ -1,0 +1,28 @@
+{
+  "architecture": "HybridLSTM-v2",
+  "data_format_version": 2,
+  "data_meta_sha256": "c424e82197d519548af948bae90ba16e7b4512dcca7ed033ee71d43877a6fc11",
+  "model_kwargs": {
+    "n_users": 250000,
+    "user_embed_dim": 16,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "lstm_dropout": 0.25,
+    "head_dropout": 0.3
+  },
+  "optimizer": "AdamW",
+  "lr": 0.0005,
+  "weight_decay": 0.0005,
+  "best_classifier_epoch": 1,
+  "best_regressor_epoch": 2,
+  "holdout_cutoff": "2026-01-14",
+  "holdout_rmsle": 1.7044776678085327,
+  "final_seeds": [
+    42
+  ],
+  "prediction_formula": "sigmoid(classifier_logit) * clamp(regressor_log, min=0) in log1p-space",
+  "sequence_input_size": 51,
+  "short_summary_size": 52,
+  "static_input_size": 257,
+  "static_feature_count_on_disk": 103
+}

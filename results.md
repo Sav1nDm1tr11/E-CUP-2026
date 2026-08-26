@@ -8,17 +8,18 @@
 |---:|---|---|---:|---|
 | 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
 | 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 3 | Upgrage two-stage model | Дмитрий Савин | 1,6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` | 
+| 3 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
 | 4 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
 | 5 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
 | 6 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
 | 7 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
 | 8 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
 | 9 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 10 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 11 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 12 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 13 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 10 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
+| 11 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 12 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 13 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 14 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
 ## Two-stage LightGBM
 
@@ -77,6 +78,45 @@ Calibrated RMSLE на финальном holdout: **1.676222**.
 Абсолютное улучшение RMSLE: **0.0453543464**.
 
 Было 0 нулевых предсказаний.
+
+### Hurdle BiLSTM v2: masking + user embedding + short intent + calendar
+
+В v2 были исправлены/добавлены:
+
+- корректный variable-length masking и `pack_padded_sequence`;
+- masked mean/max pooling без artificial padding;
+- `BatchNorm` в sequence-ветке заменён на `LayerNorm`;
+- short-term intent summary на окнах 1/3/7/14/30/60/90 дней;
+- `user_id` embedding;
+- absolute time trend и calendar features будущего 30-дневного horizon;
+- сохранение весов/config и reload smoke-test;
+- число эпох classifier/regressor выбирается по **финальному hurdle RMSLE** на последнем temporal holdout.
+
+На holdout `2026-01-14` лучшей оказалась пара:
+
+```text
+classifier epoch = 1
+regressor epoch  = 2
+holdout RMSLE    = 1.704478
+```
+
+При этом train-loss продолжал быстро падать:
+
+```text
+classifier BCE: 0.47649 -> 0.28766 за 6 эпох
+regressor MSE:  1.49146 -> 0.83350 за 16 эпох
+```
+
+Это не перенеслось на temporal holdout: более поздние эпохи ухудшали итоговый
+`p_nonzero * pred_log_positive`. То есть v2 сильнее подгоняет train (особенно через
+`user_id` embedding и более богатые summary-features), но хуже обобщается во времени.
+
+Финальный сабмит: `lstm_hurdle_v2.csv`.
+
+**Public RMSLE: 1.6613934904.**
+
+Итог: версия инженерно чище, но по качеству хуже лучшего Hurdle BiLSTM
+`1.6529693117`, поэтому текущим leaderboard-best не является.
 
 ### ... + trashhold
 

@@ -260,7 +260,7 @@ inputs/
 # ML / DL models and checkpoints
 # -----------------------------------------------------------------------------
 
-models/*
+#  models/*
 !models/README.md
 !models/.gitkeep
 

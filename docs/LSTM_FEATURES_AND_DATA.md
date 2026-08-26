@@ -1,50 +1,90 @@
-# LSTM: данные и признаки
+# LSTM v2: данные, архитектура и артефакты
 
-## Что предсказываю
+## Данные
 
-Для каждого `user_id` беру историю до `cutoff_date` включительно и предсказываю суммарный `gmv` за следующие 30 дней.
-
-## Что храню на диске
+Для каждого `user_id` используется история до `cutoff_date` включительно и target — суммарный GMV следующих 30 дней.
 
 ### Sequence
 
-90 календарных дней x 13 базовых каналов:
+На диске: 90 дней × 13 базовых каналов (`search`, `cat`, funnel counters, `gmv*`, `gmv`, `active`). Небинарные magnitude-поля хранятся после `log1p`.
 
-`search`, `cat`, `searches`, `search_to_cart`, `search_to_ord`, `cat_to_cart`, `cat_to_ord`, `to_cart`, `to_ord`, `gmv_search`, `gmv_cat`, `gmv`, `active`.
+Дополнительно на каждый snapshot сохраняются:
 
-Все небинарные величины хранятся после `log1p` _(см. [00_EDA.ipynb](/notebooks/EDA/00_EDA.ipynb))_.  
-Пустые календарные дни заполнены нулями; `active=1` показывает, что строка в этот день реально была.
+- `history_length.npy` — сколько дней внутри 90-дневного окна реально относятся к периоду после first-seen пользователя;
+- `user_index.npy` — индекс пользователя в общем `all_user_ids.npy` для embedding;
+- `calendar.npy` — sin/cos day-of-week/day-of-month/day-of-year.
 
 ### Static
 
-Беру все 91 модельный признак из [05_Data-Modeling.ipynb](/notebooks/modeling/05_Data-Modeling.ipynb): lifetime/RFM, окна 7/30/90 дней, funnel, velocity, trend, stability, age, seasonality, whale score, recency, event-day counts, channel features и monetary profile.
+Используются 91 признаков из `05_Data-Modeling.ipynb` плюс LSTM-specific календарные признаки:
 
-Добавляю 4 признака cutoff: sin/cos дня года и sin/cos недели года _(показываю сезонность)_. Итого на диске 95 static-полей.
+- cyclic cutoff date;
+- absolute time from first labeled cutoff;
+- cyclic midpoint/end forecast horizon;
+- доля выходных в следующих 30 днях;
+- generic commercial-holiday count/kernel для forecast horizon.
 
-## Что достраиваю перед моделью
+Future calendar — заранее известная информация; будущие user events в признаки не попадают.
 
-Чтобы не раздувать файлы, следующие признаки считаю **на батче**:
+## Что строится на батче
 
-- 6 календарных sequence-признаков: sin/cos дня недели, дня месяца и дня года;
-- 4 `has_*` индикатора;
-- 4 дневных ratio по воронке/GMV;
-- rolling mean 7/30 дней для `searches`, `to_cart`, `to_ord`, `gmv`;
-- rolling active-rate 7/30 дней;
-- первые разности `searches`, `to_ord`, `gmv`;
-- `log1p`-копии heavy-tail static-признаков;
-- missing-mask для каждого static-признака.
+Sequence:
 
-### Что не использую как признаки
+- history mask;
+- `has_*`;
+- funnel ratios;
+- masked rolling means 3/7/14/30d;
+- masked activity rates;
+- first differences.
 
-- `user_id` -- только ключ и порядок submission;
-- `cutoff_date` -- только temporal split и источник календарных признаков;
-- `target_gmv_30d`, `target_nonzero` -- только target;
-- сырые `has_*` из parquet отдельно не храню, потому что они точно восстанавливаются из счетчиков и добавляются на ходу.
+Отдельная short-history branch:
 
-## Модель
+- 1/3/7/14/30/60/90-day aggregates;
+- event recency;
+- recent-vs-previous deltas;
+- доля доступной истории.
 
-Classifier и regressor -- две независимые сети одинаковой архитектуры: input projection -> 2-layer bidirectional LSTM -> last/mean/max pooling; параллельно static MLP; затем fusion MLP.
+Static preprocessing:
 
-Classifier обучается на всех объектах через BCE и выдает вероятность положительного GMV. Regressor обучается только на объектах выше выбранного positive threshold и предсказывает `log1p(GMV)`.
+- `log1p`-копии heavy-tail полей;
+- missing mask;
+- стандартизация по train cutoff only.
 
-Финальную склейку делаю в log-space и подбираю на отдельной temporal validation. Optimizer и positive threshold выбираю expanding-window cross-validation, holdout остается отдельным.
+## Архитектура
+
+Classifier и conditional regressor остаются двумя независимыми hurdle-сетями.
+
+Каждая сеть содержит:
+
+1. projection + 2-layer BiLSTM на packed variable-length history;
+2. last hidden + masked mean/max pooling;
+3. short-history MLP;
+4. static MLP;
+5. `user_id` embedding;
+6. fusion MLP.
+
+Финальный прогноз:
+
+```text
+p = sigmoid(classifier_logit)
+pred_log = p * max(regressor_log, 0)
+pred = expm1(pred_log)
+```
+
+Число эпох classifier/regressor выбирается на последнем temporal holdout по итоговому hurdle RMSLE, после чего обе сети переобучаются на всех labeled cutoff.
+
+## Артефакты
+
+После запуска `07_LSTM.ipynb`:
+
+```text
+models/lstm_hurdle/
+├── classifier.pt
+├── regressor.pt
+├── static_stats.pt
+├── config.json
+├── data_meta.json
+└── all_user_ids.npy
+```
+
+`07` выполняет reload smoke-test этих файлов после сохранения.
