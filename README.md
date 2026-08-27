@@ -147,6 +147,12 @@ import joblib
 model_bundle = joblib.load("models/two_stage/two_stage_model_v1.joblib")
 ```
 
+### Two-stage ensemble v2
+
+В последних экспериментах two_stage_v2 обычный blend получил Public RMSLE
+**1.654629…**, а calibrated blend -- **1.65406…**. Описание workflow находится
+в [README v2](notebooks/modeling/two_stage_v2/README.md).
+
 ### [10_Base_Models.ipynb](notebooks/modeling/10_Base_Models.ipynb) и [11_Stacking.ipynb](notebooks/modeling/11_Stacking.ipynb)
 
 Семь различных ML-моделей на 91 признаке из
