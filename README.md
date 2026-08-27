@@ -24,6 +24,10 @@
 │   │   └── 03_EDA_target_and_cohorts.ipynb
 │   └── modeling/
         ├── two_stage/
+        ├── cc_or_net/
+        │   ├── 13_CC_OR_Net.ipynb
+        │   ├── src/
+        │   └── tests/
 │       ├── 04_naive_baselines.ipynb
 │       ├── 05_Data-Modeling.ipynb
 │       ├── 06_LSTM_Data_Preparation.ipynb
@@ -33,6 +37,7 @@
 │       └── 11_Stacking.ipynb
 ├── models/
 │   ├── lstm_hurdle/
+│   ├── cc_or_net/
 │   └── two_stage/
 │       └── two_stage_model_v1.joblib
 ├── submissions/
@@ -147,6 +152,12 @@ import joblib
 model_bundle = joblib.load("models/two_stage/two_stage_model_v1.joblib")
 ```
 
+### Two-stage ensemble v2
+
+В последних экспериментах two_stage_v2 обычный blend получил Public RMSLE
+**1.654629…**, а calibrated blend -- **1.65406…**. Описание workflow находится
+в [README v2](notebooks/modeling/two_stage_v2/README.md).
+
 ### [10_Base_Models.ipynb](notebooks/modeling/10_Base_Models.ipynb) и [11_Stacking.ipynb](notebooks/modeling/11_Stacking.ipynb)
 
 Семь различных ML-моделей на 91 признаке из
@@ -179,6 +190,35 @@ Ridge/ElasticNet, неглубокий LightGBM и LightGBM с добавлен�
 лидерборде почти исчезает. Подробности и все цифры -- в
 [results.md](results.md).
 
+
+### [cc_or_net/13_CC_OR_Net.ipynb](notebooks/modeling/cc_or_net/13_CC_OR_Net.ipynb)
+
+Адаптация Meituan CC-OR-Net (WWW'26, Conditional Cascaded Ordinal-Residual
+Networks) поверх готового `data/lstm/` пайплайна -- те же входы, что видит
+`07_LSTM.ipynb`. Задача регрессии заменяется каскадом ординальных
+классификаторов плюс регрессия внутри бакета:
+
+```text
+                                       ┌─> P(y>0) ──┐
+90 days -> BiLSTM ──┐                  │            │  chain rule
+                    ├─> h (128) ───────┤            ├─> P(бакета), 3 шт.
+static (241) ───────┘                  └─> P(y>τ2 | y>0)
+                                                    │
+                    GLU feature-alignment <─────────┘
+                              │
+                              └─> residual-регрессия -> v_norm ∈ [-1,1]
+                                  -> денормализация по квантилям бакета
+```
+
+Бакетов K=3: `y=0` / нижняя половина позитивов / верхняя (`τ2` -- медиана
+позитивного `y`, считается строго по train-cutoff'ам фолда). Код разложен по
+[cc_or_net/src/](notebooks/modeling/cc_or_net/src/) с юнит-тестами в
+`tests/` -- структура как в [two_stage/](notebooks/modeling/two_stage/).
+
+Прогноз собирается **soft**-смешением по вероятностям бакетов.
+
+Оптимум -- около 10 эпох (Public RMSLE **1.6598552938**), дальше устойчивое
+переобучение: 25 эпох -- 1.6668, 50 -- 1.6757, 100 -- 1.6821. 
 
 ### [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb)
 

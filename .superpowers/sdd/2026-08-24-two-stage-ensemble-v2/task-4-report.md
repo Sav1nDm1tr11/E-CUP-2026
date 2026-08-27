@@ -1,0 +1,26 @@
+# Task 4 report — model adapters, artifacts, inference
+
+## Raw verification summaries
+
+- Focused command: `python -m unittest tests.test_models tests.test_calibration tests.test_artifacts tests.test_inference -v`
+  - Latest run: **31/31 tests passed**, including fixed production refits, identity calibration, UTF-8 native LightGBM round-trip, real LightGBM/CatBoost/EBM selection histories, strict CatBoost objective/full-length validation/report ordering, exact 2D EBM bags/search/callback semantics, RSS-tree overhead, true bundle persistence/provenance and 91-feature inference regressions.
+- Full v2 command: `python -m unittest discover -s tests -v`
+  - Latest run: **70/70 passed**. The optional InterpretML environment check also passed in the current runtime; `models.py` still imports InterpretML lazily only when EBM fitting is requested.
+- `python -m compileall -q src`: passed.
+- Toy contract smoke: positive-only regressor fit used only positive rows for inner and outer refit, applied `log1p`, and returned a positive selected iteration; the 70% EBM memory gate returned a structured `ResourceRejection` before estimator construction.
+
+## Implemented contract
+
+- LightGBM classifier and positive-only regressor use separate inner early-stopping and fresh fixed-iteration outer refits. Outer report rows are prediction-only.
+- CatBoost requires strict inner end-to-end RMSLE inputs, exact spec distributions/settings, stable temporal/user ordering, retains winning `ParameterSampler` parameters, and refits a fresh estimator. Ordered trials are capped at three and require finite Plain RMSLE/time/peak-memory governance with the 3x/0.0005 rule.
+- EBM searches every bounded candidate (≤12) on strict inner RMSLE, applies a per-candidate monotonic 90-minute stop callback (`True` means stop), uses exact 2D temporal bags `(n_outer_train, 8)`, native `estimate_mem(X_outer_train, y_outer_train, data_multiplier=1)`, ndarray best-iteration aggregation by maximum positive stage/bag, and process-tree RSS toy-fit overhead. Missing/invalid overhead or temporal-bags `TypeError` is a structured rejection; fixed-round refit has no callback.
+- Checkpoints, JSON, Parquet, and model artifacts use sibling temporary paths followed by flush/close and atomic replace. Checkpoints carry a fingerprint and reject corruption or mismatch.
+- Versioned manifests/bundles persist classifier files, positive regressor, calibrator, config/feature/data hashes, package versions, trained-through cutoff, blend history, and pre/post-January configs; `load_bundle` requires expected provenance hashes/version and validates alignment before use.
+- Inference consumes loaded bundle components, removes reserved fields from estimator matrices, validates exactly 91 unique ordered features/hash and model-weight alignment, rejects probabilities outside `[0,1]`, preserves expected user order, and emits raw base, weighted/calibrated probabilities, positive-log, prediction-log, and `expm1` GMV audit outputs.
+- Production refit APIs now return `FittedProductionModel` and deliberately perform no selection, early stopping, or `eval_set`: fixed-round LightGBM classifier/regressor (positive-only `log1p`), stable temporal/user-sorted CatBoost, and EBM with `validation_size=0`, `outer_bags=1`, `inner_bags=0`, `early_stopping_rounds=0`, native memory estimation, and measured same-settings overhead gate. `IdentityCalibrator` is clone/joblib-compatible and preserves `[1-p, p]` exactly.
+- Native LightGBM persistence serializes `model_to_string()` as UTF-8 into an atomic temporary path and restores with `Booster(model_str=...)`, including native boosters and Unicode Windows paths. Fold metadata preserves JSON-safe native selection histories; CatBoost production refits set explicit safe defaults and never pass `eval_set`.
+
+## Concerns / follow-up
+
+- Installing `interpret==0.7.8` is an environment action outside this implementation task; no dependency was added or imported eagerly.
+- Native model round-trip functions require the corresponding optional runtime package at call time (LightGBM/CatBoost/pyarrow/joblib), as intended by the artifact format.

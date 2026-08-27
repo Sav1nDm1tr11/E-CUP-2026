@@ -9,18 +9,27 @@
 | 1 | Joint Hurdle BiLSTM v4 | Дмитрий Сорочан | **1.6509102971** | `lstm_hurdle_v4_robust.csv` |
 | 2 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
 | 3 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 4 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
-| 5 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
-| 6 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
-| 7 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
-| 8 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
-| 9 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
-| 10 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 11 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
-| 12 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 13 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 14 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 15 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 4 | Two-stage ensemble v2 calibrated blend | Дмитрий Савин | **1.65406…** | — |
+| 5 | Two-stage ensemble v2 raw blend | Дмитрий Савин | 1.654629… | — |
+| 6 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
+| 7 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
+| 8 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 9 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
+| 10 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
+| 11 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
+| 12 | CC-OR-Net (10 эпох) | Илья Пеганов | 1.6598552938371458 | `cc_or_net_10_epochs.csv` |
+| 13 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 14 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
+| 15 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 16 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 17 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 18 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+
+## Two-stage ensemble v2
+
+Workflow и структура пакета описаны в [README v2](notebooks/modeling/two_stage_v2/README.md).
+В последних экспериментах сравнивались обычный и calibrated blend: calibrated
+blend показал лучший Public RMSLE **1.65406…** против **1.654629…** у raw blend.
 
 ## Two-stage LightGBM
 
@@ -237,6 +246,44 @@ log1p-пространстве -- модели видят один и тот ж�
 
 Вывод: для дальнейшего роста нужны модели с более разнородными ошибками
 (другие признаки/архитектуры).
+
+## CC-OR-Net
+
+Ноутбук: [13_CC_OR_Net.ipynb](notebooks/modeling/cc_or_net/13_CC_OR_Net.ipynb),
+код модели -- в [cc_or_net/src/](notebooks/modeling/cc_or_net/src/), тесты -- `pytest tests/`.
+
+Адаптация Meituan CC-OR-Net (WWW'26) поверх готового `data/lstm/` пайплайна --
+те же входы, что видит `07_LSTM.ipynb`. Общий encoder `h` (128) -> каскад из
+двух бинарных классификаторов по chain rule (`P(y>0)`, `P(y>tau2 | y>0)`) ->
+GLU feature-alignment -> intra-bucket residual-регрессия с денормализацией по
+квантилям бакета. Бакетов K=3: `y=0` / нижняя половина позитивов / верхняя.
+
+### Зависимость от числа эпох
+
+Каждый прогон -- обучение на всех 10 размеченных cutoff, `CosineAnnealingLR`.
+
+| Эпох | `T_max` | lr в момент сабмита | Public RMSLE |
+|---:|---:|---:|---:|
+| 2 | 2 | 1e-6 (отожжён) | 1.6665662616 |
+| **10** | **10** | **1e-6 (отожжён)** | **1.6598552938** |
+| 25 | 100 | 1.71e-3 | 1.6668056004 |
+| 50 | 100 | 1.00e-3 | 1.6756911585 |
+| 100 | 100 | 1e-6 (отожжён) | 1.6821222853 |
+
+**Оптимум -- около 10 эпох, дальше устойчивое переобучение.** Точки 25 и 50
+снимались посреди косинусного цикла (высокий lr) и потому не были напрямую
+сравнимы, но точка 100 отожжена полностью -- как и прогоны на 2 и 10 эпох --
+и оказалась худшей из всех. Это снимает неоднозначность: деградация вызвана
+переобучением, а не расписанием lr.
+
+Переобучение идёт почти целиком через вторую ступень каскада: за 100 эпох
+`loss2` падает 0.5884 -> 0.4976 (на 15%), тогда как `loss1` практически стоит
+(0.4798 -> 0.4660), а `loss_reg` тем более (0.1810 -> 0.1781).
+
+### Итог
+
+Лучший результат **1.6598552938** -- ниже `07_LSTM` (1.6529693117) и тем более
+`Joint Hurdle BiLSTM v4` (1.6509102971).
 
 ## Наивные baseline
 
