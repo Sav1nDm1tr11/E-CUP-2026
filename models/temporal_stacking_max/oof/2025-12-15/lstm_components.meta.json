@@ -1,0 +1,8 @@
+{
+  "cache_version": 3,
+  "signature": "3be567cbbd793555",
+  "cutoff": "2025-12-15",
+  "model": "lstm_v4",
+  "seed": 42,
+  "epochs": 6
+}

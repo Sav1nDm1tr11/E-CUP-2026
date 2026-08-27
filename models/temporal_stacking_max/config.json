@@ -1,0 +1,103 @@
+{
+  "cache_version": 3,
+  "oof_cutoffs": [
+    "2025-08-17",
+    "2025-09-16",
+    "2025-10-16",
+    "2025-11-15",
+    "2025-12-15",
+    "2026-01-14"
+  ],
+  "meta_valid_cutoffs": [
+    "2025-10-16",
+    "2025-11-15",
+    "2025-12-15",
+    "2026-01-14"
+  ],
+  "base_models": [
+    "catboost_direct",
+    "two_stage",
+    "lstm_v4_seed42",
+    "random_forest"
+  ],
+  "catboost_params": {
+    "loss_function": "RMSE",
+    "iterations": 900,
+    "learning_rate": 0.03,
+    "depth": 8,
+    "l2_leaf_reg": 8.0,
+    "random_strength": 0.5,
+    "random_seed": 143,
+    "verbose": false,
+    "allow_writing_files": false,
+    "thread_count": -1
+  },
+  "two_stage_source": "trained_here",
+  "two_stage_params_source": "fallback",
+  "two_stage_feature_source": "Prepared_data numeric features",
+  "two_stage_feature_count": 91,
+  "two_stage_exact_oof": null,
+  "two_stage_exact_final": "/Users/pinta/Dev/E-CUP-2026/submissions/Two_Staged_Submission.csv",
+  "lstm_seed": 42,
+  "lstm_epochs": 6,
+  "rf_params": {
+    "n_estimators": 120,
+    "max_depth": 18,
+    "min_samples_leaf": 25,
+    "max_features": 0.5,
+    "max_samples": 0.35,
+    "n_jobs": -1,
+    "random_state": 4242,
+    "verbose": 0
+  },
+  "selected_meta_kind": "elastic",
+  "selected_meta_params": {
+    "alpha": 0.03,
+    "l1_ratio": 0.2,
+    "recency_factor": 1.0
+  },
+  "best_convex_params": {
+    "l2": 0.0,
+    "recency_factor": 1.0
+  },
+  "meta_features": [
+    "pred_cat",
+    "pred_lstm",
+    "pred_lstm_direct",
+    "pred_lstm_hurdle",
+    "lstm_gate",
+    "pred_two_stage",
+    "two_stage_gate",
+    "pred_rf",
+    "pred_cross_lstm_gate_two_m",
+    "pred_cross_two_gate_lstm_m",
+    "meta_mean",
+    "meta_std",
+    "meta_min",
+    "meta_max",
+    "meta_range",
+    "meta_lstm_minus_cat",
+    "meta_lstm_minus_two_stage",
+    "meta_cat_minus_two_stage",
+    "meta_rf_minus_mean",
+    "meta_gate_mean",
+    "meta_gate_diff",
+    "meta_gate_abs_diff"
+  ],
+  "blend_features": [
+    "pred_cat",
+    "pred_lstm",
+    "pred_lstm_direct",
+    "pred_lstm_hurdle",
+    "pred_two_stage",
+    "pred_rf",
+    "pred_cross_lstm_gate_two_m",
+    "pred_cross_two_gate_lstm_m"
+  ],
+  "saved_submissions": {
+    "mega_stack_selected.csv": "/Users/pinta/Dev/E-CUP-2026/submissions/mega_stack_selected.csv",
+    "mega_stack_convex.csv": "/Users/pinta/Dev/E-CUP-2026/submissions/mega_stack_convex.csv",
+    "mega_stack_safe70.csv": "/Users/pinta/Dev/E-CUP-2026/submissions/mega_stack_safe70.csv",
+    "mega_stack_safe85.csv": "/Users/pinta/Dev/E-CUP-2026/submissions/mega_stack_safe85.csv"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "cache_version": 3,
+  "signature": "d8e6ad4454004118",
+  "cutoff": "2026-02-13",
+  "model": "two_stage_final",
+  "spec_source": "fallback",
+  "calibration": "nested_previous_cutoff_v1"
+}

@@ -1,0 +1,18 @@
+{
+  "cache_version": 3,
+  "signature": "f9a5d465e400f848",
+  "cutoff": "2025-11-15",
+  "model": "cat_direct",
+  "params": {
+    "loss_function": "RMSE",
+    "iterations": 900,
+    "learning_rate": 0.03,
+    "depth": 8,
+    "l2_leaf_reg": 8.0,
+    "random_strength": 0.5,
+    "random_seed": 143,
+    "verbose": false,
+    "allow_writing_files": false,
+    "thread_count": -1
+  }
+}

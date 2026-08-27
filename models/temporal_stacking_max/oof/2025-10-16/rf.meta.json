@@ -1,0 +1,16 @@
+{
+  "cache_version": 3,
+  "signature": "a41b72ec28711035",
+  "cutoff": "2025-10-16",
+  "model": "rf",
+  "params": {
+    "n_estimators": 120,
+    "max_depth": 18,
+    "min_samples_leaf": 25,
+    "max_features": 0.5,
+    "max_samples": 0.35,
+    "n_jobs": -1,
+    "random_state": 4242,
+    "verbose": 0
+  }
+}

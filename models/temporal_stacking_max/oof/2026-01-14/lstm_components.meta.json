@@ -1,0 +1,8 @@
+{
+  "cache_version": 3,
+  "signature": "f8083c6e160bb51c",
+  "cutoff": "2026-01-14",
+  "model": "lstm_v4",
+  "source": "07 January diagnostics",
+  "epochs": 6
+}

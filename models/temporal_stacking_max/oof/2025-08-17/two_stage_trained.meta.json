@@ -1,0 +1,9 @@
+{
+  "cache_version": 3,
+  "signature": "8c1c1ad29a905476",
+  "cutoff": "2025-08-17",
+  "model": "two_stage_trained",
+  "spec_source": "fallback",
+  "feature_source": "Prepared_data numeric features",
+  "calibration": "nested_previous_cutoff_v1"
+}
