@@ -6,20 +6,21 @@
 
 | # | Модель | Участник | Public RMSLE | Сабмит |
 |---:|---|---|---:|---|
-| 1 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
-| 2 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 3 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
-| 4 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
-| 5 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
-| 6 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
-| 7 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
-| 8 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
-| 9 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 10 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
-| 11 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 12 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 13 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 14 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 1 | Joint Hurdle BiLSTM v4 | Дмитрий Сорочан | **1.6509102971** | `lstm_hurdle_v4_robust.csv` |
+| 2 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
+| 3 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
+| 4 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
+| 5 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
+| 6 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 7 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
+| 8 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
+| 9 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
+| 10 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 11 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
+| 12 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 13 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 14 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 15 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 
 ## Two-stage LightGBM
 
@@ -85,7 +86,7 @@ Calibrated RMSLE на финальном holdout: **1.676222**.
 
 - корректный variable-length masking и `pack_padded_sequence`;
 - masked mean/max pooling без artificial padding;
-- `BatchNorm` в sequence-ветке заменён на `LayerNorm`;
+- `BatchNorm` в sequence-ветке заменен на `LayerNorm`;
 - short-term intent summary на окнах 1/3/7/14/30/60/90 дней;
 - `user_id` embedding;
 - absolute time trend и calendar features будущего 30-дневного horizon;
@@ -117,6 +118,51 @@ regressor MSE:  1.49146 -> 0.83350 за 16 эпох
 
 Итог: версия инженерно чище, но по качеству хуже лучшего Hurdle BiLSTM
 `1.6529693117`, поэтому текущим leaderboard-best не является.
+
+
+### Joint Hurdle BiLSTM v4
+
+Финальная версия [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb).
+
+Основные изменения относительно старой Hurdle BiLSTM:
+
+- две независимые HybridLSTM -> один shared encoder;
+- три головы -- gate, positive и direct;
+- главный loss -- MSE итогового `pred_log` против `log1p(target)`;
+- learned blend между hurdle и direct;
+- variable-length masking + `pack_padded_sequence`;
+- pooling -- last + masked mean + masked max + attention;
+- отдельная short-summary ветка;
+- 53 sequence-признака на день + 93 summary-признака;
+- 235 static-признаков после log-copy/missing-mask preprocessing;
+- `user_id` embedding, future calendar и conv stem в финальном run выключены;
+- epoch выбирается по 3 expanding temporal folds;
+- final ensemble -- два seed в `log1p`-пространстве.
+
+Temporal CV:
+
+```text
+BEST_EPOCH = 6
+mean CV RMSLE = 1.715288
+CV std = 0.034384
+January RMSLE = 1.675888
+```
+
+Final seeds: `42`, `143`.
+
+Финальный сабмит: `lstm_hurdle_v4_robust.csv`.
+
+**Public RMSLE: 1.6509102971.**
+
+Предыдущий лучший результат:
+
+```text
+1.6529693117 -> 1.6509102971
+```
+
+Абсолютное улучшение RMSLE: **0.0020590146**.
+
+Это текущий лучший public score команды.
 
 ### ... + trashhold
 
@@ -157,9 +203,9 @@ expanding-window CV-фолдах, качество проверено на holdo
   recency/frequency-признаках покупок (`purchase_days_90d`,
   `median_purchase_gap_days`, `gmv_daily_mean`).
 - Все модели систематически недооценивают whale-сегмент (топ-5% по
-  `whale_score`) и часть из них даёт ложноположительный ненулевой прогноз
+  `whale_score`) и часть из них дает ложноположительный ненулевой прогноз
   пользователям с фактическим `y_true = 0`.
-- Ошибка растёт вместе с истинным GMV: на топ-квинтиле положительных
+- Ошибка растет вместе с истинным GMV: на топ-квинтиле положительных
   пользователей RMSLE примерно вдвое выше, чем на нижнем.
 
 ### Стекинг
@@ -179,7 +225,7 @@ log1p-пространстве -- модели видят один и тот ж�
 почти нечего "взаимно компенсировать". Весь выигрыш стекинга на holdout
 (~0.015 RMSLE, ~0.9% относительно лучшей одиночной модели) получается уже от
 простого линейного взвешивания прогнозов; добавление нелинейности (LightGBM)
-и исходных признаков даёт на порядок меньше.
+и исходных признаков дает на порядок меньше.
 
 **На публичном лидерборде прирост от стекинга почти полностью исчез:**
 
