@@ -261,8 +261,8 @@ inputs/
 # -----------------------------------------------------------------------------
 
 #  models/*
-!models/README.md
-!models/.gitkeep
+# !models/README.md
+# !models/.gitkeep
 
 weights/*
 !weights/README.md
