@@ -7,24 +7,27 @@
 | # | Модель | Участник | Public RMSLE | Сабмит |
 |---:|---|---|---:|---|
 | 1 | Joint Hurdle BiLSTM v4 | Дмитрий Сорочан | **1.6509102971** | `lstm_hurdle_v4_robust.csv` |
-| 2 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
-| 3 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 4 | Two-stage ensemble v2 calibrated blend | Дмитрий Савин | **1.65406…** | — |
-| 5 | Two-stage ensemble v2 raw blend | Дмитрий Савин | 1.654629… | — |
-| 6 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
-| 7 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
-| 8 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
-| 9 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
-| 10 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
-| 11 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
-| 12 | CC-OR-Net (10 эпох) | Илья Пеганов | 1.6598552938371458 | `cc_or_net_10_epochs.csv` |
-| 13 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 14 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
-| 15 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 16 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 17 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 18 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
-
+| 2 | MegaStack safe85 | Дмитрий Сорочан | **1.6509577513743492** | `mega_stack_safe85.csv` |
+| 3 | MegaStack safe70 | Дмитрий Сорочан | **1.6511013221578559** | `mega_stack_safe70.csv` |
+| 4 | MegaStack convex | Дмитрий Сорочан | **1.6522303919** | `mega_stack_convex.csv` |
+| 5 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
+| 6 | MegaStack selected ElasticNet | Дмитрий Сорочан | **1.6530410060595817** | `mega_stack_selected.csv` |
+| 7 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
+| 8 | Two-stage ensemble v2 calibrated blend | Дмитрий Савин | **1.65406…** | -- |
+| 9 | Two-stage ensemble v2 raw blend | Дмитрий Савин | 1.654629… | -- |
+| 10 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
+| 11 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
+| 12 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 13 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
+| 14 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
+| 15 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
+| 16 | CC-OR-Net (10 эпох) | Илья Пеганов | 1.6598552938371458 | `cc_or_net_10_epochs.csv` |
+| 17 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 18 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
+| 19 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 20 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 21 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 22 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
 ## Two-stage ensemble v2
 
 Workflow и структура пакета описаны в [README v2](notebooks/modeling/two_stage_v2/README.md).
@@ -247,6 +250,49 @@ log1p-пространстве -- модели видят один и тот ж�
 Вывод: для дальнейшего роста нужны модели с более разнородными ошибками
 (другие признаки/архитектуры).
 
+
+### MegaStacking: LSTM + CatBoost + two-stage + RandomForest
+
+Ноутбук: [12_MegaStacking.ipynb](notebooks/modeling/12_MegaStacking.ipynb).
+
+Level-1: CatBoost direct, Joint Hurdle BiLSTM v4, two-stage hurdle model и RandomForest.
+
+Level-1 OOF -- 6 expanding temporal cutoff:
+
+```text
+Aug <- train <= Jul
+Sep <- train <= Aug
+Oct <- train <= Sep
+Nov <- train <= Oct
+Dec <- train <= Nov
+Jan <- train <= Dec
+```
+
+Meta-CV:
+
+```text
+Oct <- Aug+Sep
+Nov <- Aug+Sep+Oct
+Dec <- Aug+Sep+Oct+Nov
+Jan <- Aug+Sep+Oct+Nov+Dec
+```
+
+Локально лучший `ElasticNet(alpha=0.03, l1_ratio=0.20)` улучшал mean temporal RMSLE `1.715013 -> 1.713549`, а на January -- `1.675888 -> 1.672087`.
+
+На public gain не перенесся:
+
+| Сабмит | Public RMSLE | Delta vs LSTM v4 |
+|---|---:|---:|
+| `lstm_hurdle_v4_robust.csv` | **1.6509102971** | -- |
+| `mega_stack_safe85.csv` | **1.6509577513743492** | +0.0000474543 |
+| `mega_stack_safe70.csv` | **1.6511013221578559** | +0.0001910251 |
+| `mega_stack_convex.csv` | **1.6522303919** | +0.0013200948 |
+| `mega_stack_selected.csv` | **1.6530410060595817** | +0.0021307090 |
+
+`safe85` почти повторил лучший LSTM, но все stack-варианты хуже.
+
+Вывод -- residuals base models слишком коррелированы, local meta-CV переоценивает перенос gain на public. Дальше выгоднее улучшать LSTM, а не усложнять level-2.
+
 ## CC-OR-Net
 
 Ноутбук: [13_CC_OR_Net.ipynb](notebooks/modeling/cc_or_net/13_CC_OR_Net.ipynb),
@@ -264,11 +310,11 @@ GLU feature-alignment -> intra-bucket residual-регрессия с денор�
 
 | Эпох | `T_max` | lr в момент сабмита | Public RMSLE |
 |---:|---:|---:|---:|
-| 2 | 2 | 1e-6 (отожжён) | 1.6665662616 |
-| **10** | **10** | **1e-6 (отожжён)** | **1.6598552938** |
+| 2 | 2 | 1e-6 (отожжен) | 1.6665662616 |
+| **10** | **10** | **1e-6 (отожжен)** | **1.6598552938** |
 | 25 | 100 | 1.71e-3 | 1.6668056004 |
 | 50 | 100 | 1.00e-3 | 1.6756911585 |
-| 100 | 100 | 1e-6 (отожжён) | 1.6821222853 |
+| 100 | 100 | 1e-6 (отожжен) | 1.6821222853 |
 
 **Оптимум -- около 10 эпох, дальше устойчивое переобучение.** Точки 25 и 50
 снимались посреди косинусного цикла (высокий lr) и потому не были напрямую
@@ -276,7 +322,7 @@ GLU feature-alignment -> intra-bucket residual-регрессия с денор�
 и оказалась худшей из всех. Это снимает неоднозначность: деградация вызвана
 переобучением, а не расписанием lr.
 
-Переобучение идёт почти целиком через вторую ступень каскада: за 100 эпох
+Переобучение идет почти целиком через вторую ступень каскада: за 100 эпох
 `loss2` падает 0.5884 -> 0.4976 (на 15%), тогда как `loss1` практически стоит
 (0.4798 -> 0.4660), а `loss_reg` тем более (0.1810 -> 0.1781).
 

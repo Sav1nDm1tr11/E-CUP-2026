@@ -174,14 +174,14 @@ model_bundle = joblib.load("models/two_stage/two_stage_model_v1.joblib")
 | FAISS KNN | instance-based |
 
 Гиперпараметры каждой модели подбираются Optuna на 3 expanding-window
-CV-фолдах, качество проверяется на отдельном holdout-cutoff, исключённом из
+CV-фолдах, качество проверяется на отдельном holdout-cutoff, исключенном из
 подбора и обучения. Лучшие по holdout -- LightGBM и CatBoost (RMSLE ≈ 1.685).
 
 Предсказания всех семи моделей на holdout сохраняются в
 [data/oof/base_models_holdout.parquet](data/oof/base_models_holdout.parquet)
 и становятся обучающей выборкой мета-модели в `11_Stacking.ipynb`: пробуются
 Ridge/ElasticNet, неглубокий LightGBM и LightGBM с добавлением исходных
-признаков, лучший вариант дообучается на всём holdout и применяется к
+признаков, лучший вариант дообучается на всем holdout и применяется к
 предсказаниям базовых моделей на inference cutoff
 ([data/oof/base_models_inference.parquet](data/oof/base_models_inference.parquet)).
 
@@ -190,6 +190,22 @@ Ridge/ElasticNet, неглубокий LightGBM и LightGBM с добавлен�
 лидерборде почти исчезает. Подробности и все цифры -- в
 [results.md](results.md).
 
+
+### [12_MegaStacking.ipynb](notebooks/modeling/12_MegaStacking.ipynb)
+
+Temporal stacking поверх CatBoost direct, Joint Hurdle BiLSTM v4, two-stage и RandomForest.
+
+Локально selected ElasticNet улучшал mean temporal RMSLE `1.715013 -> 1.713549`, но public gain не перенесся:
+
+```text
+Joint Hurdle BiLSTM v4  1.6509102971
+MegaStack safe85        1.6509577514
+MegaStack safe70        1.6511013222
+MegaStack convex        1.6522303919
+MegaStack selected      1.6530410061
+```
+
+Итог -- stacking не побил LSTM. Основной резерв качества сейчас ищется в самой LSTM / ее признаках и training policy.
 
 ### [cc_or_net/13_CC_OR_Net.ipynb](notebooks/modeling/cc_or_net/13_CC_OR_Net.ipynb)
 
@@ -222,100 +238,66 @@ static (241) ───────┘                  └─> P(y>τ2 | y>0)
 
 ### [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb)
 
-Текущая сильная LSTM-модель -- двухэтапная hurdle-схема с двумя отдельными нейросетями:
+Текущая сильная нейросетевая модель -- `Joint Hurdle BiLSTM v4`.
+
+Один shared encoder и три головы:
 
 ```text
-                         classifier
-90 days -> dynamic -> BiLSTM ----\
-                                 +-> static MLP -> P(GMV > threshold)
-
-                         regressor
-90 days -> dynamic -> BiLSTM ----\
-                                 +-> static MLP -> log1p(GMV)
+90-day sequence -> BiLSTM ------\
+short summary -> MLP ------------> fusion -> gate / positive / direct
+static -> MLP ------------------/
 ```
 
-Для classifier и regressor используется одна архитектура, но разные веса.
-
-### Sequence-ветка
-
-На входе 90 дней истории.
-
-К 13 базовым каналам добавляются:
-
-- 6 календарных sin/cos-признаков;
-- `has_*`;
-- conversion ratios;
-- rolling mean за 7/30 дней;
-- rolling activity rate за 7/30 дней;
-- первые разности.
-
-Итоговый sequence-вход -- **40 признаков на день**.
-
-Далее:
+Финальный прогноз:
 
 ```text
-BatchNorm
--> Linear projection
--> 2-layer BiLSTM
--> last hidden + mean pooling + max pooling
--> LayerNorm / MLP
+gate_prob = P(GMV > 0)
+hurdle_log = gate_prob * positive_log
+pred_log = w * hurdle_log + (1 - w) * direct_log
 ```
 
-BiLSTM не создает leakage: все 90 дней уже находятся до прогнозируемого периода.
+Входы:
 
-### Static-ветка
+- 53 sequence-признака на день;
+- 93 short-summary признака;
+- 235 static-признаков;
+- variable-length masking + `pack_padded_sequence`;
+- pooling `last + masked mean + masked max + attention`.
 
-Используются snapshot-признаки из [Prepared_data.parquet](data/Prepared_data.parquet).
+Архитектура:
 
-Дополнительно строятся:
+```text
+sequence -> Linear(80) -> 2-layer BiLSTM(hidden=112)
+         -> last/mean/max/attention -> sequence head (144)
 
-- `log1p`-копии heavy-tail признаков;
-- missing masks.
+summary 93 -> MLP -> 64
+static 235 -> MLP -> 96
 
-Нормализация static-признаков считается только по train-cutoff текущего fold.
+144 + 64 + 96 -> fusion -> 96 -> gate / positive / direct
+```
 
-### Hurdle-задача
+Loss:
 
-Classifier обучается через BCE и предсказывает вероятность положительного target относительно выбранного `positive_threshold`.
+```text
+main = MSE(pred_log, log1p(target))
++ 0.03 * BCE(gate, y > 0)
++ 0.10 * positive-only MSE
++ 0.05 * direct MSE
+```
 
-Regressor обучается только на объектах выше этого порога и предсказывает `log1p(GMV)` через MSE.
+Проверенный run:
 
-Финальный прогноз строится в log-space через soft gate classifier.
+```text
+BEST_EPOCH = 6
+mean CV RMSLE = 1.715288
+CV std = 0.034384
+January RMSLE = 1.675888
+final seeds = 42, 143
+```
 
-### Валидация и подбор параметров
+Public RMSLE: **1.6509102971** -- текущий лучший результат команды.
 
-Используется expanding-window temporal CV.
-
-Проверяются:
-
-- `AdamW`, `RAdam`, `Adam`;
-- несколько learning rate / weight decay;
-- `positive_threshold = 0` и `10`.
-
-На каждом fold отдельно обучаются classifier и regressor, после чего считается итоговый RMSLE.
-
-После CV:
-
-1. лучшая конфигурация обучается на train-cutoff;
-2. на validation выбираются лучшие эпохи;
-3. последний размеченный cutoff остается holdout;
-4. отдельно подбираются `temperature`, `gamma` и hard probability threshold для soft hurdle;
-5. финальные модели переобучаются на всех размеченных cutoff.
-
-Используются:
-
-- dropout;
-- BatchNorm / LayerNorm;
-- early stopping;
-- `ReduceLROnPlateau`;
-- gradient clipping;
-- mixed precision на CUDA.
-
-Финальные веса сохраняются в [models/lstm_hurdle](models/lstm_hurdle), сабмит -- [lstm_hurdle.csv](submissions/lstm_hurdle.csv).
-
-> @l3eg1nner @Sav1nDm1tr11 запушьте свои сабмишны пж, будем блендить 😈  
-> я еще обновлю ноутбук, перепишу классификатор под cnn наверн...
-
+Следующий эксперимент расширяет training horizon, выбирает число эпох early stopping на temporal CV и затем обучает 4 final seed: `42`, `143`, `67`, `2026`. LightGBM-oracle пока выключен.
 ## Запуск
 
 ```bash
