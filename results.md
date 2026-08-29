@@ -6,28 +6,30 @@
 
 | # | Модель | Участник | Public RMSLE | Сабмит |
 |---:|---|---|---:|---|
-| 1 | Joint Hurdle BiLSTM v4 | Дмитрий Сорочан | **1.6509102971** | `lstm_hurdle_v4_robust.csv` |
-| 2 | MegaStack safe85 | Дмитрий Сорочан | **1.6509577513743492** | `mega_stack_safe85.csv` |
-| 3 | MegaStack safe70 | Дмитрий Сорочан | **1.6511013221578559** | `mega_stack_safe70.csv` |
-| 4 | MegaStack convex | Дмитрий Сорочан | **1.6522303919** | `mega_stack_convex.csv` |
-| 5 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
-| 6 | MegaStack selected ElasticNet | Дмитрий Сорочан | **1.6530410060595817** | `mega_stack_selected.csv` |
-| 7 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
-| 8 | Two-stage ensemble v2 calibrated blend | Дмитрий Савин | **1.65406…** | -- |
-| 9 | Two-stage ensemble v2 raw blend | Дмитрий Савин | 1.654629… | -- |
-| 10 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
-| 11 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
-| 12 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
-| 13 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
-| 14 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
-| 15 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
-| 16 | CC-OR-Net (10 эпох) | Илья Пеганов | 1.6598552938371458 | `cc_or_net_10_epochs.csv` |
-| 17 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
-| 18 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
-| 19 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
-| 20 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
-| 21 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
-| 22 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+| 1 | Joint Hurdle BiLSTM v4 + expanded ES, 3 seeds | Дмитрий Сорочан | **1.6506631932** | `lstm_hurdle_v4_expanded_es_3seed.csv` |
+| 2 | Joint Hurdle BiLSTM v4 | Дмитрий Сорочан | **1.6509102971** | `lstm_hurdle_v4_robust.csv` |
+| 3 | MegaStack safe85 | Дмитрий Сорочан | **1.6509577513743492** | `mega_stack_safe85.csv` |
+| 4 | MegaStack safe70 | Дмитрий Сорочан | **1.6511013221578559** | `mega_stack_safe70.csv` |
+| 5 | MegaStack convex | Дмитрий Сорочан | **1.6522303919** | `mega_stack_convex.csv` |
+| 6 | LSTM | Дмитрий Сорочан | **1.6529693117** | `lstm_fixed_hyperparameters.csv` |
+| 7 | MegaStack selected ElasticNet | Дмитрий Сорочан | **1.6530410060595817** | `mega_stack_selected.csv` |
+| 8 | Uniform blend of LSTM, One-stage Catboost, Two-stage model | Дмитрий Сорочан | 1.6537790895 | `blend_uniform_log.csv` |
+| 9 | Two-stage ensemble v2 calibrated blend | Дмитрий Савин | **1.65406…** | -- |
+| 10 | Two-stage ensemble v2 raw blend | Дмитрий Савин | 1.654629… | -- |
+| 11 | Upgrage two-stage model | Дмитрий Савин | 1.6546538590195814 | `two_stage_submission_sigmoid_soft_log.csv` |
+| 12 | Two-stage model | Дмитрий Савин | 1.6550467207965227 | `Two_Staged_Submission.csv` |
+| 13 | LSTM + Trashhold | Дмитрий Сорочан | 1.6569080920856287 | `lstm_earlystop_optuna.csv` |
+| 14 | Stacking: meta ElasticNet on 7 base models | Илья Пеганов | 1.657995788908437 | `stacking_meta_elasticnet.csv` |
+| 15 | Stacking: meta LightGBM on 7 base models + features | Илья Пеганов | 1.6588914845065432 | `stacking_meta_lightgbm.csv` |
+| 16 | Base LightGBM | Илья Пеганов | 1.6593651677462053 | `base_lightgbm.csv` |
+| 17 | CC-OR-Net (10 эпох) | Илья Пеганов | 1.6598552938371458 | `cc_or_net_10_epochs.csv` |
+| 18 | One-stage CatBoost | Илья Пеганов | 1.6609167284 | `one_staged_catboost.csv` |
+| 19 | Hurdle BiLSTM v2 (masking + user embedding + intent/calendar) | Дмитрий Сорочан | **1.6613934904** | `lstm_hurdle_v2.csv` |
+| 20 | LSTM new architecture | Дмитрий Сорочан | 1.6735082186 | `lstm_architecture_v2.csv` |
+| 21 | LSTM baseline | Дмитрий Сорочан | 1.6983236581 | `lstm.csv` |
+| 22 | MLP classifier + LSTM regressor | Дмитрий Сорочан | 1.9005838775 | `lstm.csv` |
+| 23 | Naive mean monthly | Илья Пеганов | 2.0170393569 | `naive_mean_monthly.csv` |
+
 ## Two-stage ensemble v2
 
 Workflow и структура пакета описаны в [README v2](notebooks/modeling/two_stage_v2/README.md).
@@ -174,7 +176,96 @@ Final seeds: `42`, `143`.
 
 Абсолютное улучшение RMSLE: **0.0020590146**.
 
-Это текущий лучший public score команды.
+До expanded-ES run это был лучший public score команды.
+
+
+### Joint Hurdle BiLSTM v4 -- expanded early stopping + 3 seeds
+
+Ноутбук: [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb).
+
+Цель эксперимента -- убрать искусственный лимит старой CV в 6 эпох и дать каждой temporal fold остановиться по early stopping.
+
+Training policy:
+
+```text
+MAX_CV_EPOCHS = 30
+patience = 8
+min_delta = 1e-4
+```
+
+Temporal folds:
+
+```text
+Nov <- Apr..Oct
+Dec <- Apr..Nov
+Jan <- Apr..Dec
+```
+
+Local best:
+
+| Fold | Last epoch | Local best epoch | Local best RMSLE |
+|---|---:|---:|---:|
+| Nov | 20 | 12 | 1.730947 |
+| Dec | 12 | 4 | 1.737120 |
+| Jan | 21 | 13 | 1.671289 |
+
+Global epoch выбирается только среди common epochs всех трех fold.
+
+Лучшие common epochs:
+
+```text
+epoch 10 -> mean RMSLE 1.715708
+epoch 12 -> mean RMSLE 1.716003
+epoch  8 -> mean RMSLE 1.716115
+```
+
+Итог CV:
+
+```text
+BEST_EPOCH = 10
+LAST_COMMON_EPOCH = 12
+mean CV RMSLE = 1.715708
+CV std = 0.033195
+January RMSLE @ epoch 10 = 1.677522
+```
+
+Final train -- три независимых seed на всех labeled cutoff:
+
+```text
+42
+143
+2026
+```
+
+Финальный prediction -- среднее трех `pred_log` в `log1p`-пространстве, затем `expm1`.
+
+Сабмит:
+
+```text
+lstm_hurdle_v4_expanded_es_3seed.csv
+```
+
+**Public RMSLE: 1.6506631932.**
+
+Предыдущий лучший:
+
+```text
+1.6509102971 -> 1.6506631932
+```
+
+Абсолютный gain: **0.0002471039 RMSLE**.
+
+Локальная CV при этом не улучшилась относительно старой v4:
+
+```text
+old mean CV = 1.715288
+new mean CV = 1.715708
+
+old January = 1.675888
+new January = 1.677522
+```
+
+Вывод -- старый лимит 6 эпох действительно был слишком коротким, потому что global optimum новой training policy оказался на epoch 10. Однако public gain очень маленький и не был предсказан temporal CV. Нельзя однозначно разделить вклад более длинного train, третьего seed и новой LR trajectory, потому что они изменились одновременно.
 
 ### ... + trashhold
 

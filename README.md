@@ -238,17 +238,23 @@ static (241) ───────┘                  └─> P(y>τ2 | y>0)
 
 ### [07_LSTM.ipynb](notebooks/modeling/07_LSTM.ipynb)
 
-Текущая сильная нейросетевая модель -- `Joint Hurdle BiLSTM v4`.
+Текущая сильнейшая модель -- `Joint Hurdle BiLSTM v4` с expanded temporal early stopping.
 
-Один shared encoder и три головы:
+Shared encoder:
 
 ```text
-90-day sequence -> BiLSTM ------\
-short summary -> MLP ------------> fusion -> gate / positive / direct
-static -> MLP ------------------/
+sequence 53/day -> 2-layer BiLSTM(hidden=112) -> last/mean/max/attention -> 144
+short summary 93 -> MLP -> 64
+static 235 -> MLP -> 96
+
+144 + 64 + 96 -> fusion 96
+                    |
+         +----------+----------+
+         |          |          |
+       gate      positive    direct
 ```
 
-Финальный прогноз:
+Прогноз:
 
 ```text
 gate_prob = P(GMV > 0)
@@ -256,48 +262,53 @@ hurdle_log = gate_prob * positive_log
 pred_log = w * hurdle_log + (1 - w) * direct_log
 ```
 
-Входы:
+Основной loss -- MSE итогового `pred_log` против `log1p(target)`, плюс небольшие auxiliary losses для трех голов.
 
-- 53 sequence-признака на день;
-- 93 short-summary признака;
-- 235 static-признаков;
-- variable-length masking + `pack_padded_sequence`;
-- pooling `last + masked mean + masked max + attention`.
-
-Архитектура:
+Temporal CV:
 
 ```text
-sequence -> Linear(80) -> 2-layer BiLSTM(hidden=112)
-         -> last/mean/max/attention -> sequence head (144)
+Nov <- Apr..Oct
+Dec <- Apr..Nov
+Jan <- Apr..Dec
 
-summary 93 -> MLP -> 64
-static 235 -> MLP -> 96
-
-144 + 64 + 96 -> fusion -> 96 -> gate / positive / direct
+max epochs = 30
+early stopping patience = 8
+BEST_EPOCH = 10
+LAST_COMMON_EPOCH = 12
+mean CV RMSLE = 1.715708
+CV std = 0.033195
+January RMSLE @ epoch 10 = 1.677522
 ```
 
-Loss:
+Local best epochs сильно различались:
 
 ```text
-main = MSE(pred_log, log1p(target))
-+ 0.03 * BCE(gate, y > 0)
-+ 0.10 * positive-only MSE
-+ 0.05 * direct MSE
+Nov -> 12
+Dec -> 4
+Jan -> 13
 ```
 
-Проверенный run:
+Поэтому final epoch выбирается не по одному месяцу, а по mean RMSLE только тех epochs, которые прошли все три fold.
+
+Final train:
 
 ```text
-BEST_EPOCH = 6
-mean CV RMSLE = 1.715288
-CV std = 0.034384
-January RMSLE = 1.675888
-final seeds = 42, 143
+all labeled data -> seed 42   -> pred_log_42
+all labeled data -> seed 143  -> pred_log_143
+all labeled data -> seed 2026 -> pred_log_2026
+
+mean(pred_log_42, pred_log_143, pred_log_2026)
+-> expm1
+-> submission
 ```
 
-Public RMSLE: **1.6509102971** -- текущий лучший результат команды.
+Public RMSLE: **1.6506631932**.
 
-Следующий эксперимент расширяет training horizon, выбирает число эпох early stopping на temporal CV и затем обучает 4 final seed: `42`, `143`, `67`, `2026`. LightGBM-oracle пока выключен.
+Сабмит: `lstm_hurdle_v4_expanded_es_3seed.csv`.
+
+Это текущий лучший public score команды.
+
+Полный per-user OOF gate/magnitude export вынесен в отдельный `07_LSTM_OOF_recovery.ipynb`, чтобы основной notebook соответствовал фактически выполненному run.
 ## Запуск
 
 ```bash
