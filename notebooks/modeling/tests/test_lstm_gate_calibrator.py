@@ -83,7 +83,7 @@ def test_temporal_selection_uses_december_for_selection_and_january_guardrail():
         rows.append(part)
     result = select_temporal_calibrator(
         pd.concat(rows, ignore_index=True),
-        CalibrationSearchConfig(max_trials=2, search_trials=1, candidates=("identity", "platt")),
+        CalibrationSearchConfig(search_trials=1, candidates=("identity", "platt")),
     )
     assert result["selection_cutoff"] == "2025-12-15"
     assert result["audit_cutoff"] == "2026-01-14"
@@ -91,9 +91,9 @@ def test_temporal_selection_uses_december_for_selection_and_january_guardrail():
 
 
 def test_lightgbm_configuration_has_eval_set_and_early_stopping():
-    config = CalibrationSearchConfig(max_trials=3)
+    config = CalibrationSearchConfig()
     assert config.early_stopping_rounds > 0
-    assert config.max_trials <= 3
+    assert config.search_trials == 16
 
 
 def test_nonzero_gate_correction_recomposes_only_hurdle_head():
@@ -171,6 +171,7 @@ def test_bundle_manifest_contains_provenance_and_ordered_schema(tmp_path):
     manifest = save_calibrator_bundle(
         tmp_path / "bundle", model, feature_names=["lstm_gate_prob"],
         oof_hash="oof", inference_hash="inference", data_hash="data",
+        training_signature="train",
         selected_params={"learning_rate": 0.03}, best_iteration=7,
     )
     assert manifest["hashes"] == {"oof": "oof", "inference": "inference", "data": "data"}
@@ -209,12 +210,47 @@ def test_seed_alignment_rejects_missing_or_reordered_users():
 def test_bundle_loader_rejects_missing_hashes_and_round_trips(tmp_path):
     from lstm_gate_calibrator import IdentityGateCalibrator
     path = tmp_path / "bundle"
-    save_calibrator_bundle(path, IdentityGateCalibrator(), feature_names=["lstm_gate_prob"], oof_hash="oof", inference_hash="inf", data_hash="data")
+    save_calibrator_bundle(path, IdentityGateCalibrator(), feature_names=["lstm_gate_prob"], oof_hash="oof", inference_hash="inf", data_hash="data", training_signature="train")
     loaded = load_calibrator_bundle(path, expected_feature_names=["lstm_gate_prob"])
     assert loaded["feature_names"] == ("lstm_gate_prob",)
     (path / "manifest.json").write_text((path / "manifest.json").read_text().replace('"data": "data"', '"data": ""'))
     with pytest.raises(ValueError, match="hash"):
         load_calibrator_bundle(path)
+
+
+def test_round3_removes_duplicate_trial_limits_and_exposes_conservative_ranges():
+    config = CalibrationSearchConfig()
+    assert not hasattr(config, "max_trials")
+    assert not hasattr(config, "min_better_folds")
+    assert config.min_child_samples >= 500
+    assert config.subsample_freq == 1
+    assert config.rf_min_samples_leaf >= 20
+    assert config.learning_rate <= 0.04
+
+
+def test_save_rejects_empty_training_signature_or_hash_before_writing(tmp_path):
+    from lstm_gate_calibrator import IdentityGateCalibrator
+    with pytest.raises(ValueError, match="training signature"):
+        save_calibrator_bundle(tmp_path / "bad", IdentityGateCalibrator(), feature_names=["lstm_gate_prob"], oof_hash="o", inference_hash="i", data_hash="d", training_signature="")
+    assert not (tmp_path / "bad").exists()
+    with pytest.raises(ValueError, match="schema"):
+        save_calibrator_bundle(tmp_path / "bad_schema", IdentityGateCalibrator(), feature_names=[], oof_hash="o", inference_hash="i", data_hash="d", training_signature="train")
+
+
+def test_auc_uses_tie_correct_average_ranks():
+    from lstm_gate_calibrator import _evaluation_metrics
+    frame = _components().assign(target=[0., 1., 1.])
+    metrics = _evaluation_metrics(frame, frame.pred_log.to_numpy(), np.array([.5, .5, .9]))
+    assert metrics["roc_auc"] == pytest.approx(0.75)
+
+
+def test_production_january_calibration_single_class_returns_identity():
+    rows = [_components(cutoff=cutoff).assign(target=1.0)
+            for cutoff in ["2025-11-15", "2025-12-15", "2026-01-14"]]
+    result = select_temporal_calibrator(pd.concat(rows, ignore_index=True), CalibrationSearchConfig(search_trials=1))
+    production = fit_production_calibrator(pd.concat(rows, ignore_index=True), result, CalibrationSearchConfig(search_trials=1))
+    assert getattr(production, "fallback_reason", "")
+    assert production.correction_weight_ == 0.0
 
 
 def test_tiny_lightgbm_fit_uses_eval_early_stop_and_schema_safe_refit():
@@ -237,6 +273,13 @@ def test_tiny_lightgbm_fit_uses_eval_early_stop_and_schema_safe_refit():
     lgbm_rows = [row for row in selected["candidates"] if row["name"] == "lightgbm"]
     assert lgbm_rows and "skip_reason" not in lgbm_rows[0]
     assert lgbm_rows[0]["params"]["max_boost_rounds"] == 15
+    params = lgbm_rows[0]["params"]
+    assert 3 <= params["max_depth"] <= 6
+    assert 0.01 <= params["learning_rate"] <= 0.04
+    assert 7 <= params["num_leaves"] <= min(31, 2 ** params["max_depth"])
+    assert 500 <= params["min_child_samples"] <= 5000
+    assert 0.70 <= params["subsample"] <= 0.95
+    assert 0.55 <= params["colsample_bytree"] <= 0.90
     assert lgbm_rows[0]["best_iteration"] is not None
     selected["selected_name"] = "lightgbm"
     selected["best_iteration"] = lgbm_rows[0]["best_iteration"]

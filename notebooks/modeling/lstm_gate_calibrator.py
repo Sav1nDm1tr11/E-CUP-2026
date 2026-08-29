@@ -43,7 +43,6 @@ FORBIDDEN_TOKENS = ("target", "label", "residual", "error", "ytrue", "y_true", "
 class CalibrationSearchConfig:
     """Small, explicit search budget and all temporal/guardrail policy knobs."""
 
-    max_trials: int = 8
     search_trials: int = 16
     random_state: int = 42
     fit_cutoff: str = "2025-11-15"
@@ -55,10 +54,11 @@ class CalibrationSearchConfig:
     max_depth: int = 4
     learning_rate: float = 0.03
     num_leaves: int = 15
-    min_child_samples: int = 30
+    min_child_samples: int = 1000
     reg_lambda: float = 5.0
     subsample: float = 0.85
     colsample_bytree: float = 0.75
+    subsample_freq: int = 1
     reg_alpha: float = 0.5
     max_bin: int = 127
     correction_weight: float = 1.0
@@ -68,14 +68,14 @@ class CalibrationSearchConfig:
     max_audit_zero_regression: float = 0.0
     max_audit_positive_regression: float = 0.0
     max_audit_high_value_regression: float = 0.0
-    min_better_folds: int = 1
     correction_weights: tuple[float, ...] = (0.0, 0.5, 1.0)
     max_ratios: tuple[float, ...] = (1.0, 1.5, 2.0)
+    rf_min_samples_leaf: int = 50
     candidates: tuple[str, ...] = ("identity", "platt", "beta", "lightgbm", "random_forest")
 
     def __post_init__(self) -> None:
-        if int(self.max_trials) < 1 or int(self.search_trials) < 1:
-            raise ValueError("trial budgets must be positive")
+        if int(self.search_trials) < 1:
+            raise ValueError("search_trials must be positive")
         if int(self.early_stopping_rounds) < 1:
             raise ValueError("early_stopping_rounds must be positive")
         if not 0.0 <= float(self.correction_weight) <= 1.0:
@@ -400,9 +400,7 @@ def _hurdle_weight(frame: pd.DataFrame) -> np.ndarray:
     return np.clip(recovered, 0.0, 1.0)
 
 
-def compose_calibrated_prediction(frame: pd.DataFrame, calibrator: Any = None, *,
-                                  correction_weight: float = 1.0, max_ratio: float = 2.0) -> np.ndarray:
-    """Recompose Joint Hurdle output, changing only ``gate * positive``."""
+def _compose_with_probability(frame: pd.DataFrame, calibrated: np.ndarray, *, correction_weight: float, max_ratio: float) -> np.ndarray:
     missing = [name for name in REQUIRED_HEADS if name not in frame]
     if missing:
         raise ValueError(f"component columns missing: {missing}")
@@ -412,7 +410,7 @@ def compose_calibrated_prediction(frame: pd.DataFrame, calibrator: Any = None, *
     gate = _clip_probability(frame["gate_prob"])
     if float(correction_weight) == 0.0:
         return baseline.copy()
-    calibrated = _predict_probability(calibrator or IdentityGateCalibrator(), frame)
+    calibrated = _clip_probability(calibrated)
     # Compute the gate movement in logit space, then retain the existing
     # proxy-gate composition with a bounded calibrated/original probability
     # ratio. The ratio bound is applied before recomposition.
@@ -422,6 +420,13 @@ def compose_calibrated_prediction(frame: pd.DataFrame, calibrator: Any = None, *
     corrected_hurdle = corrected_gate * _finite(frame["positive_log"], "positive_log")
     direct = _finite(frame["direct_log"], "direct_log")
     return np.clip(weight * corrected_hurdle + (1.0 - weight) * direct, 0.0, None)
+
+
+def compose_calibrated_prediction(frame: pd.DataFrame, calibrator: Any = None, *,
+                                  correction_weight: float = 1.0, max_ratio: float = 2.0) -> np.ndarray:
+    """Recompose Joint Hurdle output, changing only ``gate * positive``."""
+    calibrated = _predict_probability(calibrator or IdentityGateCalibrator(), frame)
+    return _compose_with_probability(frame, calibrated, correction_weight=correction_weight, max_ratio=max_ratio)
 
 
 def _corrected_log(frame: pd.DataFrame, model: Any, correction_weight: float, max_ratio: float) -> np.ndarray:
@@ -446,10 +451,22 @@ def _evaluation_metrics(frame: pd.DataFrame, prediction_log: np.ndarray, probabi
                "log_loss": float(-np.mean(y * np.log(p) + (1 - y) * np.log1p(-p))),
                "brier": float(np.mean((p - y) ** 2))}
     if np.unique(y).size == 2:
-        order = np.argsort(p)
-        ranks = np.empty_like(order, dtype=float); ranks[order] = np.arange(len(order)) + 1
-        positives, negatives = y == 1, y == 0
-        metrics["roc_auc"] = float((ranks[positives].sum() - positives.sum() * (positives.sum() + 1) / 2) / (positives.sum() * negatives.sum()))
+        try:
+            from sklearn.metrics import roc_auc_score  # type: ignore
+            metrics["roc_auc"] = float(roc_auc_score(y, p))
+        except (ImportError, ModuleNotFoundError):
+            order = np.argsort(p, kind="mergesort")
+            sorted_p = p[order]; ranks_sorted = np.empty(len(p), dtype=float)
+            start = 0
+            while start < len(p):
+                end = start + 1
+                while end < len(p) and sorted_p[end] == sorted_p[start]:
+                    end += 1
+                ranks_sorted[start:end] = (start + 1 + end) / 2.0
+                start = end
+            ranks = np.empty(len(p), dtype=float); ranks[order] = ranks_sorted
+            positives, negatives = y == 1, y == 0
+            metrics["roc_auc"] = float((ranks[positives].sum() - positives.sum() * (positives.sum() + 1) / 2) / (positives.sum() * negatives.sum()))
     else:
         metrics["roc_auc"] = float("nan")
     zero = y == 0
@@ -464,10 +481,10 @@ def _evaluation_metrics(frame: pd.DataFrame, prediction_log: np.ndarray, probabi
 
 def _tune_correction(frame: pd.DataFrame, model: Any, config: CalibrationSearchConfig) -> tuple[float, float, float, dict[str, float]]:
     choices = []
+    probability = _predict_probability(model, frame)
     for weight in config.correction_weights:
         for ratio in config.max_ratios:
-            corrected = compose_calibrated_prediction(frame, model, correction_weight=float(weight), max_ratio=float(ratio))
-            probability = _predict_probability(model, frame)
+            corrected = _compose_with_probability(frame, probability, correction_weight=float(weight), max_ratio=float(ratio))
             metrics = _evaluation_metrics(frame, corrected, probability)
             choices.append((metrics["rmsle"], float(weight), float(ratio), metrics))
     return min(choices, key=lambda row: (row[0], row[1], row[2]))[1:]
@@ -507,6 +524,7 @@ def _make_lightgbm(config: CalibrationSearchConfig, seed: int) -> Any:
         reg_lambda=float(config.reg_lambda),
         subsample=float(config.subsample), colsample_bytree=float(config.colsample_bytree),
         reg_alpha=float(config.reg_alpha), max_bin=int(config.max_bin),
+        subsample_freq=int(config.subsample_freq),
         deterministic=True, force_col_wise=True, class_weight=None,
     )
 
@@ -539,6 +557,7 @@ def _fit_candidate(name: str, fit: pd.DataFrame, validation: pd.DataFrame, featu
     if name == "random_forest":
         from sklearn.ensemble import RandomForestClassifier  # type: ignore
         model = RandomForestClassifier(n_estimators=min(300, int(config.n_estimators)), max_depth=config.max_depth,
+                                       min_samples_leaf=int(config.rf_min_samples_leaf),
                                        random_state=config.random_state, n_jobs=-1)
         model.fit(X_fit, y_fit)
         model.feature_names_ = tuple(feature_names)
@@ -586,9 +605,10 @@ def select_temporal_calibrator(meta_frame: pd.DataFrame, config: CalibrationSear
             params: dict[str, Any] = {}
             if name == "lightgbm":
                 rng = random.Random(int(config.random_state) + trial_index)
-                trial_config = replace(config, max_depth=rng.choice((2, 3, 4, 5)),
-                                       learning_rate=rng.choice((0.01, 0.03, 0.05, 0.1)),
-                                       num_leaves=rng.choice((7, 15, 31)),
+                sampled_depth = rng.choice((3, 4, 5, 6))
+                trial_config = replace(config, max_depth=sampled_depth,
+                                       learning_rate=rng.choice((0.01, 0.02, 0.03, 0.04)),
+                                       num_leaves=rng.choice(tuple(value for value in (7, 15, 31) if value <= 2 ** sampled_depth)),
                                        min_child_samples=rng.choice((500, 1000, 2500, 5000)),
                                        reg_lambda=rng.choice((2.0, 5.0, 10.0, 20.0)),
                                        subsample=rng.choice((0.70, 0.80, 0.90, 0.95)),
@@ -670,8 +690,9 @@ def fit_production_calibrator(meta_frame: pd.DataFrame, selection: Mapping[str, 
     name = str(selection.get("selected_name", "identity")) if selection else "identity"
     if name == "identity":
         model = IdentityGateCalibrator().fit(train[list(feature_names)], _target_active(train))
-        model.correction_weight_ = float(selection.get("correction_weight", 0.0)) if selection else 0.0
-        model.max_ratio_ = float(selection.get("max_ratio", 1.0)) if selection else 1.0
+        model.correction_weight_ = 0.0
+        model.max_ratio_ = 1.0
+        model.fallback_reason = "identity selected; no production probability calibration required"
         return model
     # Production fitting uses validation as eval_set for LightGBM, preserving callback semantics.
     # Reuse the selected early-stopping tree count when the search supplied it.
@@ -684,13 +705,23 @@ def fit_production_calibrator(meta_frame: pd.DataFrame, selection: Mapping[str, 
     if name in {"lightgbm", "random_forest"}:
         base = _fit_candidate(name, train, roles["early_stop"], feature_names, config, early_stopping=False)
         calibration = roles["probability_calibration"]
-        probability_layer = BetaGateCalibrator().fit(
-            np.asarray(base.predict_proba(calibration[list(feature_names)]))[:, 1], _target_active(calibration)
-        )
+        try:
+            probability_layer = BetaGateCalibrator().fit(
+                np.asarray(base.predict_proba(calibration[list(feature_names)]))[:, 1], _target_active(calibration)
+            )
+        except ValueError:
+            fallback = IdentityGateCalibrator().fit(train[list(feature_names)], _target_active(train))
+            fallback.correction_weight_ = 0.0; fallback.max_ratio_ = 1.0
+            fallback.fallback_reason = "production_probability_calibration lacks both classes"
+            return fallback
         result = ProbabilityCalibratedModel(base, probability_layer, feature_names)
     else:
         calibration = roles["probability_calibration"]
-        result = _fit_candidate(name, calibration, roles["correction_tuning"], feature_names, config)
+        try:
+            result = _fit_candidate(name, calibration, roles["correction_tuning"], feature_names, config)
+        except ValueError:
+            result = IdentityGateCalibrator().fit(train[list(feature_names)], _target_active(train))
+            result.fallback_reason = "production_probability_calibration lacks both classes"
     result.correction_weight_ = float(selection.get("correction_weight", 1.0)) if selection else 1.0
     result.max_ratio_ = float(selection.get("max_ratio", 2.0)) if selection else 2.0
     return result
@@ -771,11 +802,18 @@ def save_calibrator_bundle(path: str | Path, calibrator: Any, *, config: Calibra
                            data_path: str | Path | None = None, oof_hash: str | None = None,
                            inference_hash: str | None = None, data_hash: str | None = None,
                            selected_params: Mapping[str, Any] | None = None,
-                           best_iteration: int | None = None) -> dict[str, Any]:
+                           best_iteration: int | None = None,
+                           training_signature: str = "") -> dict[str, Any]:
     """Persist model and provenance in a versioned, atomically-written bundle."""
-    target = Path(path); target.mkdir(parents=True, exist_ok=True)
     config = config or CalibrationSearchConfig()
     names = tuple(feature_names or getattr(calibrator, "feature_names_", ()))
+    if not names or len(names) != len(set(names)) or any(_forbidden_name(name) for name in names):
+        raise ValueError("feature schema must be non-empty and valid")
+    if not str(oof_hash or "") or not str(inference_hash or "") or not str(data_hash or ""):
+        raise ValueError("oof, inference, and data hashes are required")
+    if not str(training_signature):
+        raise ValueError("training signature is required")
+    target = Path(path)
     packages = ("numpy", "pandas", "lightgbm", "scikit-learn", "joblib")
     package_versions = {name: (importlib.metadata.version(name) if _has_package(name) else "unavailable") for name in packages}
     manifest = {"version": 1, "feature_names": list(names), "feature_sha256": _sha256(list(names)),
@@ -784,12 +822,15 @@ def save_calibrator_bundle(path: str | Path, calibrator: Any, *, config: Calibra
                 "cutoff_report": dict(cutoff_report or {}),
                 "package_versions": package_versions,
                 "cutoffs": {"fit": config.fit_cutoff, "validation": config.validation_cutoff, "audit": config.audit_cutoff},
+                "january_role": "production_probability_calibration",
                 "selected_params": dict(selected_params or (selection_report or {}).get("selected_params", {})),
                 "best_iteration": best_iteration if best_iteration is not None else (selection_report or {}).get("best_iteration"),
                 "hashes": {"oof": oof_hash or (_sha256(oof_frame) if oof_frame is not None else ""),
                            "inference": inference_hash or (_sha256(inference_frame) if inference_frame is not None else ""),
                            "data": data_hash or (_sha256(data_path) if data_path is not None else "")},
                 "data_path": str(data_path or "")}
+    manifest["training_signature"] = str(training_signature)
+    target.mkdir(parents=True, exist_ok=True)
     _atomic_write(target / "calibrator.pkl", pickle.dumps(calibrator, protocol=pickle.HIGHEST_PROTOCOL))
     _atomic_write(target / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True, default=str).encode())
     return manifest
@@ -825,6 +866,10 @@ def validate_calibrator_bundle(path: str | Path, *, expected_feature_names: Sequ
         raise ValueError("invalid feature contract in calibrator bundle")
     if _sha256(list(names)) != manifest.get("feature_sha256"):
         raise ValueError("feature hash mismatch")
+    if not isinstance(manifest.get("config"), dict) or manifest.get("config_sha256") != _sha256(manifest["config"]):
+        raise ValueError("config hash mismatch")
+    if not str(manifest.get("training_signature", "")):
+        raise ValueError("training signature is missing")
     if expected_feature_names is not None and names != tuple(expected_feature_names):
         raise ValueError("feature names do not match bundle")
     required_packages = {"numpy", "pandas", "lightgbm", "scikit-learn", "joblib"}
