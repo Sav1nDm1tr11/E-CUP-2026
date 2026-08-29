@@ -16,6 +16,7 @@ from lstm_gate_calibrator import (  # noqa: E402
     build_meta_frame,
     compose_calibrated_prediction,
     fit_production_calibrator,
+    load_calibrator_bundle,
     save_calibrator_bundle,
     select_temporal_calibrator,
     validate_calibrator_bundle,
@@ -107,7 +108,10 @@ def test_nonzero_gate_correction_recomposes_only_hurdle_head():
     actual = compose_calibrated_prediction(
         components, FixedCalibrator(), correction_weight=1.0, max_ratio=4.0
     )
-    expected = 0.6 * (0.75 * components.positive_log) + 0.4 * components.direct_log
+    gate = components.gate_prob.to_numpy()
+    delta = np.clip(np.log(0.75 / 0.25) - np.log(gate / (1.0 - gate)), -np.log(4.0), np.log(4.0))
+    corrected_gate = 1.0 / (1.0 + np.exp(-(np.log(gate / (1.0 - gate)) + delta)))
+    expected = 0.6 * (corrected_gate * components.positive_log) + 0.4 * components.direct_log
     np.testing.assert_allclose(actual, expected)
 
 
@@ -172,6 +176,45 @@ def test_bundle_manifest_contains_provenance_and_ordered_schema(tmp_path):
     assert manifest["hashes"] == {"oof": "oof", "inference": "inference", "data": "data"}
     assert manifest["best_iteration"] == 7
     assert validate_calibrator_bundle(tmp_path / "bundle")["feature_names"] == ["lstm_gate_prob"]
+
+
+def test_selection_candidate_ids_and_correction_tuning_are_persisted():
+    rows = []
+    rng = np.random.default_rng(7)
+    for cutoff in ["2025-11-15", "2025-12-15", "2026-01-14"]:
+        part = pd.concat([_components(cutoff=cutoff)] * 30, ignore_index=True)
+        part["user_id"] = np.arange(90)
+        part["target"] = rng.integers(0, 2, len(part)).astype(float)
+        rows.append(part)
+    result = select_temporal_calibrator(pd.concat(rows, ignore_index=True), CalibrationSearchConfig(search_trials=1, max_boost_rounds=8))
+    ids = [row["candidate_id"] for row in result["candidates"]]
+    assert len(ids) == len(set(ids))
+    assert all("correction_weight" in row and "max_ratio" in row for row in result["candidates"] if "skip_reason" not in row)
+
+
+def test_real_artifact_alias_schema_is_normalized_without_leakage():
+    frame = _components().rename(columns={"cutoff": "cutoff_date", "target": "y_true"})
+    frame["target_nonzero"] = (frame["y_true"] > 0).astype(int)
+    normalized = build_meta_frame(frame)
+    assert {"cutoff", "target", "target_active"}.issubset(normalized.columns)
+    assert all("target" not in name and "cutoff" not in name for name in normalized.attrs["feature_names"])
+
+
+def test_seed_alignment_rejects_missing_or_reordered_users():
+    components = pd.concat([_components().assign(seed=42), _components(ids=(1, 3, 2)).assign(seed=143)], ignore_index=True)
+    with pytest.raises(ValueError, match="seed.*order|alignment"):
+        apply_calibrator_per_seed(components, None, correction_weight=0.0)
+
+
+def test_bundle_loader_rejects_missing_hashes_and_round_trips(tmp_path):
+    from lstm_gate_calibrator import IdentityGateCalibrator
+    path = tmp_path / "bundle"
+    save_calibrator_bundle(path, IdentityGateCalibrator(), feature_names=["lstm_gate_prob"], oof_hash="oof", inference_hash="inf", data_hash="data")
+    loaded = load_calibrator_bundle(path, expected_feature_names=["lstm_gate_prob"])
+    assert loaded["feature_names"] == ("lstm_gate_prob",)
+    (path / "manifest.json").write_text((path / "manifest.json").read_text().replace('"data": "data"', '"data": ""'))
+    with pytest.raises(ValueError, match="hash"):
+        load_calibrator_bundle(path)
 
 
 def test_tiny_lightgbm_fit_uses_eval_early_stop_and_schema_safe_refit():

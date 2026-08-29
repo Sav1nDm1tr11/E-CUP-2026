@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import os
 import pickle
@@ -56,11 +57,20 @@ class CalibrationSearchConfig:
     num_leaves: int = 15
     min_child_samples: int = 30
     reg_lambda: float = 5.0
+    subsample: float = 0.85
+    colsample_bytree: float = 0.75
+    reg_alpha: float = 0.5
+    max_bin: int = 127
     correction_weight: float = 1.0
     max_ratio: float = 2.0
     min_improvement: float = 0.0
     max_audit_regression: float = 0.0
+    max_audit_zero_regression: float = 0.0
+    max_audit_positive_regression: float = 0.0
+    max_audit_high_value_regression: float = 0.0
     min_better_folds: int = 1
+    correction_weights: tuple[float, ...] = (0.0, 0.5, 1.0)
+    max_ratios: tuple[float, ...] = (1.0, 1.5, 2.0)
     candidates: tuple[str, ...] = ("identity", "platt", "beta", "lightgbm", "random_forest")
 
     def __post_init__(self) -> None:
@@ -199,6 +209,10 @@ def build_meta_frame(
     """Create deterministic meta-features while retaining only safe provenance columns."""
     if not isinstance(components, pd.DataFrame):
         raise TypeError("components must be a DataFrame")
+    aliases = {"cutoff_date": "cutoff", "y_true": "target", "target_nonzero": "target_active"}
+    components = components.copy()
+    components.rename(columns={source: target for source, target in aliases.items()
+                               if source in components and target not in components}, inplace=True)
     missing = [name for name in REQUIRED_HEADS if name not in components]
     if missing:
         raise ValueError(f"component columns missing: {missing}")
@@ -369,7 +383,18 @@ def _hurdle_weight(frame: pd.DataFrame) -> np.ndarray:
     denominator = frame["hurdle_log"].to_numpy(dtype=float) - frame["direct_log"].to_numpy(dtype=float)
     recovered = np.full(len(frame), 0.5, dtype=float)
     valid = np.abs(denominator) > 1e-10
-    recovered[valid] = numerator[valid] / denominator[valid]
+    rowwise = np.divide(numerator, denominator, out=np.full(len(frame), 0.5), where=valid)
+    group_columns = [c for c in ("cutoff", "seed") if c in frame]
+    if len(group_columns) == 1:
+        groups = frame.groupby(group_columns[0], sort=False).groups
+    elif group_columns:
+        groups = frame.groupby(group_columns, sort=False).groups
+    else:
+        groups = {"all": np.arange(len(frame))}
+    for indices in groups.values():
+        group_indices = np.asarray(indices, dtype=int) if "all" in groups and list(groups) == ["all"] else frame.index.get_indexer(indices)
+        group_valid = valid[group_indices]
+        recovered[group_indices] = np.median(rowwise[group_indices][group_valid]) if group_valid.any() else 0.5
     # A fitted neural mix is always in [0, 1].  Degenerate rows cannot
     # identify it, so the neutral blend is the only non-invasive fallback.
     return np.clip(recovered, 0.0, 1.0)
@@ -391,9 +416,8 @@ def compose_calibrated_prediction(frame: pd.DataFrame, calibrator: Any = None, *
     # Compute the gate movement in logit space, then retain the existing
     # proxy-gate composition with a bounded calibrated/original probability
     # ratio. The ratio bound is applied before recomposition.
-    corrected_gate = _sigmoid(_logit(gate) + _logit(calibrated) - _logit(gate))
-    ratio = np.clip(corrected_gate / gate, 1.0 / max_ratio, max_ratio)
-    corrected_gate = np.clip(gate * ratio, EPS, 1.0 - EPS)
+    delta = np.clip(_logit(calibrated) - _logit(gate), -np.log(max_ratio), np.log(max_ratio))
+    corrected_gate = _sigmoid(_logit(gate) + float(correction_weight) * delta)
     weight = _hurdle_weight(frame)
     corrected_hurdle = corrected_gate * _finite(frame["positive_log"], "positive_log")
     direct = _finite(frame["direct_log"], "direct_log")
@@ -412,6 +436,45 @@ def _rmsle(frame: pd.DataFrame, prediction_log: np.ndarray) -> float:
     else:
         raise ValueError("scoring requires target or target_log")
     return float(np.sqrt(np.mean((target - prediction_log) ** 2)))
+
+
+def _evaluation_metrics(frame: pd.DataFrame, prediction_log: np.ndarray, probability: np.ndarray) -> dict[str, float]:
+    target_log = np.log1p(np.clip(frame["target"].to_numpy(dtype=float), 0.0, None)) if "target" in frame else frame["target_log"].to_numpy(dtype=float)
+    y = _target_active(frame).astype(float)
+    p = np.clip(np.asarray(probability, dtype=float), EPS, 1.0 - EPS)
+    metrics = {"rmsle": float(np.sqrt(np.mean((target_log - prediction_log) ** 2))),
+               "log_loss": float(-np.mean(y * np.log(p) + (1 - y) * np.log1p(-p))),
+               "brier": float(np.mean((p - y) ** 2))}
+    if np.unique(y).size == 2:
+        order = np.argsort(p)
+        ranks = np.empty_like(order, dtype=float); ranks[order] = np.arange(len(order)) + 1
+        positives, negatives = y == 1, y == 0
+        metrics["roc_auc"] = float((ranks[positives].sum() - positives.sum() * (positives.sum() + 1) / 2) / (positives.sum() * negatives.sum()))
+    else:
+        metrics["roc_auc"] = float("nan")
+    zero = y == 0
+    positive = y == 1
+    high = np.zeros(len(y), dtype=bool)
+    if len(target_log) >= 5:
+        high = target_log >= np.quantile(target_log, 0.8)
+    for label, mask in (("zero", zero), ("positive", positive), ("high_value", high)):
+        metrics[f"rmsle_{label}"] = float(np.sqrt(np.mean((target_log[mask] - prediction_log[mask]) ** 2))) if mask.any() else float("nan")
+    return metrics
+
+
+def _tune_correction(frame: pd.DataFrame, model: Any, config: CalibrationSearchConfig) -> tuple[float, float, float, dict[str, float]]:
+    choices = []
+    for weight in config.correction_weights:
+        for ratio in config.max_ratios:
+            corrected = compose_calibrated_prediction(frame, model, correction_weight=float(weight), max_ratio=float(ratio))
+            probability = _predict_probability(model, frame)
+            metrics = _evaluation_metrics(frame, corrected, probability)
+            choices.append((metrics["rmsle"], float(weight), float(ratio), metrics))
+    return min(choices, key=lambda row: (row[0], row[1], row[2]))[1:]
+
+
+def _non_regressed(actual: float, baseline: float, tolerance: float) -> bool:
+    return bool(np.isnan(actual) or np.isnan(baseline) or actual <= baseline + tolerance)
 
 
 def _cutoff_parts(frame: pd.DataFrame, config: CalibrationSearchConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -442,6 +505,9 @@ def _make_lightgbm(config: CalibrationSearchConfig, seed: int) -> Any:
         max_depth=int(config.max_depth), random_state=seed, n_jobs=-1, verbosity=-1,
         num_leaves=int(config.num_leaves), min_child_samples=int(config.min_child_samples),
         reg_lambda=float(config.reg_lambda),
+        subsample=float(config.subsample), colsample_bytree=float(config.colsample_bytree),
+        reg_alpha=float(config.reg_alpha), max_bin=int(config.max_bin),
+        deterministic=True, force_col_wise=True, class_weight=None,
     )
 
 
@@ -458,8 +524,13 @@ def _fit_candidate(name: str, fit: pd.DataFrame, validation: pd.DataFrame, featu
         model = _make_lightgbm(config, config.random_state)
         import lightgbm as lgb  # type: ignore
         if early_stopping:
-            model.fit(X_fit, y_fit, eval_set=[(X_val, y_val)], eval_metric="binary_logloss",
-                      callbacks=[lgb.early_stopping(config.early_stopping_rounds, verbose=False)])
+            fit_kwargs = {"eval_metric": "binary_logloss",
+                          "callbacks": [lgb.early_stopping(config.early_stopping_rounds, verbose=False)]}
+            if "eval_X" in inspect.signature(model.fit).parameters:
+                fit_kwargs.update(eval_X=X_val, eval_y=y_val)
+            else:  # LightGBM < 4 compatibility
+                fit_kwargs["eval_set"] = [(X_val, y_val)]
+            model.fit(X_fit, y_fit, **fit_kwargs)
         else:
             model.fit(X_fit, y_fit)
             model._calibrator_best_iteration = int(config.max_boost_rounds)
@@ -498,6 +569,7 @@ def select_temporal_calibrator(meta_frame: pd.DataFrame, config: CalibrationSear
         raise ValueError("stable December correction-tuning slice is empty")
     baseline_val = _rmsle(tuning, tuning["pred_log"].to_numpy(dtype=float))
     baseline_audit = _rmsle(audit, audit["pred_log"].to_numpy(dtype=float))
+    baseline_audit_metrics = _evaluation_metrics(audit, audit["pred_log"].to_numpy(dtype=float), audit["gate_prob"].to_numpy(dtype=float))
     rows: list[dict[str, Any]] = []
     models: dict[str, Any] = {}
     # Identity and probability baselines are always evaluated once. LGBM gets
@@ -508,6 +580,7 @@ def select_temporal_calibrator(meta_frame: pd.DataFrame, config: CalibrationSear
     if "random_forest" in config.candidates:
         candidates.append("random_forest")
     for trial_index, name in enumerate(candidates):
+        candidate_id = f"{name}-{trial_index:03d}"
         try:
             trial_config = config
             params: dict[str, Any] = {}
@@ -516,11 +589,16 @@ def select_temporal_calibrator(meta_frame: pd.DataFrame, config: CalibrationSear
                 trial_config = replace(config, max_depth=rng.choice((2, 3, 4, 5)),
                                        learning_rate=rng.choice((0.01, 0.03, 0.05, 0.1)),
                                        num_leaves=rng.choice((7, 15, 31)),
-                                       min_child_samples=rng.choice((10, 20, 40, 80)),
-                                       reg_lambda=rng.choice((1.0, 5.0, 20.0)))
+                                       min_child_samples=rng.choice((500, 1000, 2500, 5000)),
+                                       reg_lambda=rng.choice((2.0, 5.0, 10.0, 20.0)),
+                                       subsample=rng.choice((0.70, 0.80, 0.90, 0.95)),
+                                       colsample_bytree=rng.choice((0.55, 0.70, 0.80, 0.90)),
+                                       reg_alpha=rng.choice((0.1, 0.5, 2.0, 5.0)))
                 params = {"max_depth": trial_config.max_depth, "learning_rate": trial_config.learning_rate,
                           "num_leaves": trial_config.num_leaves, "min_child_samples": trial_config.min_child_samples,
-                          "reg_lambda": trial_config.reg_lambda, "max_boost_rounds": trial_config.max_boost_rounds,
+                          "reg_lambda": trial_config.reg_lambda, "subsample": trial_config.subsample,
+                          "colsample_bytree": trial_config.colsample_bytree, "reg_alpha": trial_config.reg_alpha,
+                          "max_bin": trial_config.max_bin, "max_boost_rounds": trial_config.max_boost_rounds,
                           "early_stopping_rounds": trial_config.early_stopping_rounds}
                 base = _fit_candidate(name, fit, roles["early_stop"], feature_names, trial_config)
                 raw_calibration = np.asarray(base.predict_proba(roles["probability_calibration"][list(feature_names)]))[:, 1]
@@ -535,31 +613,42 @@ def select_temporal_calibrator(meta_frame: pd.DataFrame, config: CalibrationSear
                 model = _fit_candidate(name, roles["probability_calibration"], tuning, feature_names, trial_config)
             else:
                 model = IdentityGateCalibrator().fit(fit[list(feature_names)], _target_active(fit))
-            val_pred = _corrected_log(tuning, model, config.correction_weight, config.max_ratio)
-            audit_pred = _corrected_log(audit, model, config.correction_weight, config.max_ratio)
+            tuned_weight, tuned_ratio, tuned_metrics = _tune_correction(tuning, model, config)
+            val_pred = _corrected_log(tuning, model, tuned_weight, tuned_ratio)
+            audit_pred = _corrected_log(audit, model, tuned_weight, tuned_ratio)
             val_score, audit_score = _rmsle(tuning, val_pred), _rmsle(audit, audit_pred)
+            audit_metrics = _evaluation_metrics(audit, audit_pred, _predict_probability(model, audit))
+            guardrails = (_non_regressed(audit_score, baseline_audit, config.max_audit_regression)
+                          and _non_regressed(audit_metrics["rmsle_zero"], baseline_audit_metrics["rmsle_zero"], config.max_audit_zero_regression)
+                          and _non_regressed(audit_metrics["rmsle_positive"], baseline_audit_metrics["rmsle_positive"], config.max_audit_positive_regression)
+                          and _non_regressed(audit_metrics["rmsle_high_value"], baseline_audit_metrics["rmsle_high_value"], config.max_audit_high_value_regression))
             row = {"name": name, "validation_rmsle": val_score, "audit_rmsle": audit_score,
                    "delta": val_score - baseline_val, "audit_delta": audit_score - baseline_audit,
-                   "guardrails_pass": audit_score <= baseline_audit + config.max_audit_regression,
+                   "guardrails_pass": guardrails,
                    "trial_index": trial_index, "params": params,
-                   "best_iteration": getattr(model, "best_iteration_", None)}
-            rows.append(row); models[name] = model
+                   "best_iteration": getattr(model, "best_iteration_", None),
+                   "correction_weight": tuned_weight, "max_ratio": tuned_ratio,
+                   "metrics": tuned_metrics, "audit_metrics": audit_metrics}
+            row["candidate_id"] = candidate_id
+            rows.append(row); models[candidate_id] = model
         except (ImportError, ModuleNotFoundError, ValueError, TypeError, AttributeError) as exc:
-            rows.append({"name": name, "trial_index": trial_index, "params": params,
+            rows.append({"name": name, "candidate_id": candidate_id, "trial_index": trial_index, "params": params,
                          "skip_reason": f"{type(exc).__name__}: {exc}"})
     if not rows:
         raise RuntimeError("no calibration candidate could be fitted")
     eligible = [r for r in rows if r.get("guardrails_pass", False) and r.get("delta", 0.0) < -config.min_improvement]
-    selected = min(eligible, key=lambda r: (r["validation_rmsle"], r["audit_rmsle"])) if eligible else next(r for r in rows if r["name"] == "identity")
+    selected = min(eligible, key=lambda r: r["validation_rmsle"]) if eligible else next(r for r in rows if r["name"] == "identity")
     if selected["name"] != "identity" and selected["delta"] >= -config.min_improvement:
         selected = next(r for r in rows if r["name"] == "identity")
-    selected["best_iteration"] = getattr(models[selected["name"]], "best_iteration_", None)
-    return {"selected_name": selected["name"], "selected_model": models[selected["name"]],
+    selected["best_iteration"] = getattr(models[selected["candidate_id"]], "best_iteration_", None)
+    return {"selected_name": selected["name"], "selected_candidate_id": selected["candidate_id"], "selected_model": models[selected["candidate_id"]],
             "feature_names": tuple(feature_names), "candidates": rows, "trials": len(rows),
             "selection_cutoff": str(config.validation_cutoff), "audit_cutoff": str(config.audit_cutoff),
             "guardrails_pass": bool(selected["guardrails_pass"] and selected["name"] != "identity"),
             "baseline_validation_rmsle": baseline_val, "baseline_audit_rmsle": baseline_audit,
+            "baseline_audit_metrics": baseline_audit_metrics,
             "best_iteration": selected.get("best_iteration"), "selected_params": selected.get("params", {}),
+            "correction_weight": selected.get("correction_weight", 0.0), "max_ratio": selected.get("max_ratio", 1.0),
             "config": config}
 
 
@@ -575,29 +664,40 @@ def fit_production_calibrator(meta_frame: pd.DataFrame, selection: Mapping[str, 
     """Refit the chosen activity model on November+December, excluding January."""
     config = config or (selection.get("config") if selection else None) or CalibrationSearchConfig()
     feature_names = validate_meta_frame(meta_frame, require_target=True)
-    fit, validation, _ = _cutoff_parts(meta_frame, config)
-    roles = _split_validation_roles(validation)
+    fit, validation, audit = _cutoff_parts(meta_frame, config)
+    roles = _split_validation_roles(audit)
+    train = pd.concat([fit, validation], ignore_index=True)
     name = str(selection.get("selected_name", "identity")) if selection else "identity"
     if name == "identity":
-        return IdentityGateCalibrator().fit(fit[list(feature_names)], _target_active(fit))
+        model = IdentityGateCalibrator().fit(train[list(feature_names)], _target_active(train))
+        model.correction_weight_ = float(selection.get("correction_weight", 0.0)) if selection else 0.0
+        model.max_ratio_ = float(selection.get("max_ratio", 1.0)) if selection else 1.0
+        return model
     # Production fitting uses validation as eval_set for LightGBM, preserving callback semantics.
     # Reuse the selected early-stopping tree count when the search supplied it.
+    if selection and selection.get("selected_params"):
+        params = selection["selected_params"]
+        config = replace(config, **{key: params[key] for key in ("max_depth", "learning_rate", "num_leaves", "min_child_samples", "reg_lambda", "subsample", "colsample_bytree", "reg_alpha", "max_bin") if key in params})
     if name == "lightgbm" and selection and selection.get("best_iteration"):
         config = replace(config, max_boost_rounds=max(1, int(selection["best_iteration"])),
                          n_estimators=max(1, int(selection["best_iteration"])))
     if name in {"lightgbm", "random_forest"}:
-        base = _fit_candidate(name, fit, roles["early_stop"], feature_names, config, early_stopping=False)
+        base = _fit_candidate(name, train, roles["early_stop"], feature_names, config, early_stopping=False)
         calibration = roles["probability_calibration"]
         probability_layer = BetaGateCalibrator().fit(
             np.asarray(base.predict_proba(calibration[list(feature_names)]))[:, 1], _target_active(calibration)
         )
-        return ProbabilityCalibratedModel(base, probability_layer, feature_names)
-    calibration = roles["probability_calibration"]
-    return _fit_candidate(name, calibration, roles["correction_tuning"], feature_names, config)
+        result = ProbabilityCalibratedModel(base, probability_layer, feature_names)
+    else:
+        calibration = roles["probability_calibration"]
+        result = _fit_candidate(name, calibration, roles["correction_tuning"], feature_names, config)
+    result.correction_weight_ = float(selection.get("correction_weight", 1.0)) if selection else 1.0
+    result.max_ratio_ = float(selection.get("max_ratio", 2.0)) if selection else 2.0
+    return result
 
 
 def apply_calibrator_per_seed(inference_components: pd.DataFrame, calibrator: Any = None, *,
-                              correction_weight: float = 1.0, max_ratio: float = 2.0,
+                              correction_weight: float | None = None, max_ratio: float | None = None,
                               config: CalibrationSearchConfig | None = None,
                               static_snapshot: Any = None,
                               static_feature_names: Sequence[str] | None = None) -> pd.DataFrame:
@@ -610,11 +710,26 @@ def apply_calibrator_per_seed(inference_components: pd.DataFrame, calibrator: An
         calibrator = calibrator.get("selected_model", calibrator.get("calibrator"))
     if config is not None:
         correction_weight, max_ratio = config.correction_weight, config.max_ratio
+    if correction_weight is None:
+        correction_weight = float(getattr(calibrator, "correction_weight_", 1.0))
+    if max_ratio is None:
+        max_ratio = float(getattr(calibrator, "max_ratio_", 2.0))
     if not 0.0 <= float(correction_weight) <= 1.0 or float(max_ratio) < 1.0:
         raise ValueError("invalid correction bounds")
     missing = [name for name in ("user_id", "pred_log", "gate_prob") if name not in inference_components]
     if missing:
         raise ValueError(f"inference component columns missing: {missing}")
+    if "seed" in inference_components:
+        seed_groups = list(inference_components.groupby("seed", sort=False))
+        expected = None
+        for seed, part in seed_groups:
+            ids = part["user_id"].to_numpy()
+            if len(ids) != np.unique(ids).size:
+                raise ValueError(f"seed {seed} contains duplicate users")
+            if expected is None:
+                expected = ids
+            elif not np.array_equal(expected, ids):
+                raise ValueError("seed user alignment/order mismatch")
     result = inference_components.copy().reset_index(drop=True)
     model_names = tuple(getattr(calibrator, "feature_names_", ())) if calibrator is not None else ()
     if model_names and not set(model_names).issubset(result.columns) and "lstm_gate_prob" not in result:
@@ -715,9 +830,26 @@ def validate_calibrator_bundle(path: str | Path, *, expected_feature_names: Sequ
     required_packages = {"numpy", "pandas", "lightgbm", "scikit-learn", "joblib"}
     if not required_packages.issubset(manifest.get("package_versions", {})):
         raise ValueError("bundle is missing package provenance")
-    if not {"oof", "inference", "data"}.issubset(manifest.get("hashes", {})):
+    hashes = manifest.get("hashes", {})
+    if not {"oof", "inference", "data"}.issubset(hashes) or any(not str(hashes[name]) for name in ("oof", "inference", "data")):
         raise ValueError("bundle is missing data hashes")
     return manifest
+
+
+def load_calibrator_bundle(path: str | Path, *, expected_feature_names: Sequence[str] | None = None,
+                           expected_config_sha256: str | None = None,
+                           expected_hashes: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Validate provenance before loading a persisted calibrator for reuse."""
+    manifest = validate_calibrator_bundle(path, expected_feature_names=expected_feature_names)
+    if expected_config_sha256 is not None and manifest.get("config_sha256") != expected_config_sha256:
+        raise ValueError("config hash mismatch")
+    if expected_hashes:
+        for name, expected in expected_hashes.items():
+            if manifest.get("hashes", {}).get(name) != expected:
+                raise ValueError(f"{name} hash mismatch")
+    with (Path(path) / "calibrator.pkl").open("rb") as stream:
+        calibrator = pickle.load(stream)
+    return {"calibrator": calibrator, "feature_names": tuple(manifest["feature_names"]), "manifest": manifest}
 
 
 def validate_artifact_bundle(path: str | Path, **kwargs: Any) -> dict[str, Any]:
@@ -731,4 +863,5 @@ __all__ = ["CalibrationSearchConfig", "build_meta_frame", "validate_meta_frame",
            "build_temporal_splits",
            "fit_production_calibrator", "apply_calibrator_per_seed", "save_calibrator_bundle",
            "validate_calibrator_bundle", "validate_artifact_bundle", "validate_artifact_manifest",
+           "load_calibrator_bundle", "compose_calibrated_prediction",
            "IdentityGateCalibrator", "PlattGateCalibrator", "BetaGateCalibrator"]
