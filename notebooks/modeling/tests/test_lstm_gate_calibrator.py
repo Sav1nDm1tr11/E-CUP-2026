@@ -213,6 +213,8 @@ def test_bundle_loader_rejects_missing_hashes_and_round_trips(tmp_path):
     save_calibrator_bundle(path, IdentityGateCalibrator(), feature_names=["lstm_gate_prob"], oof_hash="oof", inference_hash="inf", data_hash="data", training_signature="train")
     loaded = load_calibrator_bundle(path, expected_feature_names=["lstm_gate_prob"])
     assert loaded["feature_names"] == ("lstm_gate_prob",)
+    with pytest.raises(ValueError, match="training signature"):
+        load_calibrator_bundle(path, expected_training_signature="other")
     (path / "manifest.json").write_text((path / "manifest.json").read_text().replace('"data": "data"', '"data": ""'))
     with pytest.raises(ValueError, match="hash"):
         load_calibrator_bundle(path)
@@ -251,6 +253,19 @@ def test_production_january_calibration_single_class_returns_identity():
     production = fit_production_calibrator(pd.concat(rows, ignore_index=True), result, CalibrationSearchConfig(search_trials=1))
     assert getattr(production, "fallback_reason", "")
     assert production.correction_weight_ == 0.0
+
+
+def test_forced_nonidentity_january_fallback_keeps_zero_correction():
+    rows = [_components(cutoff=cutoff).assign(target=1.0)
+            for cutoff in ["2025-11-15", "2025-12-15", "2026-01-14"]]
+    frame = pd.concat(rows, ignore_index=True)
+    config = CalibrationSearchConfig(search_trials=1)
+    forced = {"selected_name": "platt", "correction_weight": 1.0, "max_ratio": 2.0, "config": config}
+    production = fit_production_calibrator(frame, forced, config)
+    assert production.__class__.__name__ == "IdentityGateCalibrator"
+    assert production.correction_weight_ == 0.0
+    assert production.max_ratio_ == 1.0
+    assert "production_probability_calibration" in production.fallback_reason
 
 
 def test_tiny_lightgbm_fit_uses_eval_early_stop_and_schema_safe_refit():

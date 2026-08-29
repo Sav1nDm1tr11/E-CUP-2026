@@ -721,7 +721,9 @@ def fit_production_calibrator(meta_frame: pd.DataFrame, selection: Mapping[str, 
             result = _fit_candidate(name, calibration, roles["correction_tuning"], feature_names, config)
         except ValueError:
             result = IdentityGateCalibrator().fit(train[list(feature_names)], _target_active(train))
+            result.correction_weight_ = 0.0; result.max_ratio_ = 1.0
             result.fallback_reason = "production_probability_calibration lacks both classes"
+            return result
     result.correction_weight_ = float(selection.get("correction_weight", 1.0)) if selection else 1.0
     result.max_ratio_ = float(selection.get("max_ratio", 2.0)) if selection else 2.0
     return result
@@ -883,11 +885,14 @@ def validate_calibrator_bundle(path: str | Path, *, expected_feature_names: Sequ
 
 def load_calibrator_bundle(path: str | Path, *, expected_feature_names: Sequence[str] | None = None,
                            expected_config_sha256: str | None = None,
-                           expected_hashes: Mapping[str, str] | None = None) -> dict[str, Any]:
+                           expected_hashes: Mapping[str, str] | None = None,
+                           expected_training_signature: str | None = None) -> dict[str, Any]:
     """Validate provenance before loading a persisted calibrator for reuse."""
     manifest = validate_calibrator_bundle(path, expected_feature_names=expected_feature_names)
     if expected_config_sha256 is not None and manifest.get("config_sha256") != expected_config_sha256:
         raise ValueError("config hash mismatch")
+    if expected_training_signature is not None and manifest.get("training_signature") != expected_training_signature:
+        raise ValueError("training signature mismatch")
     if expected_hashes:
         for name, expected in expected_hashes.items():
             if manifest.get("hashes", {}).get(name) != expected:
