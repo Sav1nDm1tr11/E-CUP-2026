@@ -111,8 +111,14 @@ def _target_active(frame: pd.DataFrame) -> np.ndarray:
 
 
 def _forbidden_name(name: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "", str(name).lower())
-    return any(token.replace("_", "") in normalized for token in FORBIDDEN_TOKENS)
+    raw = str(name).lower()
+    normalized = re.sub(r"[^a-z0-9]+", "", raw)
+    segments = {part for part in re.split(r"[^a-z0-9]+", raw) if part}
+    # Segment matching avoids false positives such as approved
+    # ``active_day_rate_lifetime`` (which merely contains the letters "time").
+    if segments.intersection({"target", "label", "residual", "error", "y", "true", "userid", "user", "id", "identity", "cutoff", "fold", "source", "provenance", "date", "time"}):
+        return True
+    return normalized.startswith(("target", "label", "residual", "error", "ytrue", "userid", "identity", "cutoff", "fold"))
 
 
 def validate_meta_frame(frame: pd.DataFrame, *, require_target: bool = False) -> tuple[str, ...]:
