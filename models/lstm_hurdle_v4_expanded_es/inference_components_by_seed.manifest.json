@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "training_signature": "61f48cd812a99230",
+  "data_meta_sha256": "c424e82197d519548af948bae90ba16e7b4512dcca7ed033ee71d43877a6fc11",
+  "cutoff_date": "2026-02-13",
+  "seeds": [
+    42,
+    143,
+    2026
+  ],
+  "rows": 750000
+}

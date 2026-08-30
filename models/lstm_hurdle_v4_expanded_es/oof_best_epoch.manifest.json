@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "training_signature": "b3215f0d9b22de64",
+  "data_meta_sha256": "c424e82197d519548af948bae90ba16e7b4512dcca7ed033ee71d43877a6fc11",
+  "best_epoch": 11,
+  "rows": 744983,
+  "cutoffs": [
+    "2025-11-15",
+    "2025-12-15",
+    "2026-01-14"
+  ]
+}
